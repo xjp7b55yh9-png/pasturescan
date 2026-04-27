@@ -1,0 +1,1304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <title>PastureScan</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body { background: #f2f2f7; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+// ── localStorage storage shim (replaces Claude artifacts window.storage) ──
+window.storage = {
+  get: (key) => {
+    const val = localStorage.getItem(key);
+    return Promise.resolve(val ? { value: val } : null);
+  },
+  set: (key, value) => {
+    localStorage.setItem(key, value);
+    return Promise.resolve();
+  },
+};
+
+const { useState, useRef, useCallback, useEffect } = React;
+
+// ─── Seasons (DairyNZ Sep-Aug dairy year, Southern Hemisphere) ────────────
+const SEASONS = [
+  { label:"Spring", months:[8,9,10], multiplier:140 },
+  { label:"Summer", months:[11,0,1], multiplier:147 },
+  { label:"Autumn", months:[2,3,4],  multiplier:140 },
+  { label:"Winter", months:[5,6,7],  multiplier:126 },
+];
+function getCurrentSeason() {
+  const m = new Date().getMonth();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  const isSouthern = tz.includes("Auckland") || tz.includes("Wellington") ||
+    tz.includes("Sydney") || tz.includes("Melbourne") || tz.includes("Brisbane") ||
+    tz.includes("Adelaide") || tz.includes("Hobart") || tz.includes("Perth") ||
+    new Date().getTimezoneOffset() <= -480;
+  const month = isSouthern ? m : (m + 6) % 12;
+  return SEASONS.find(s => s.months.includes(month)) || SEASONS[0];
+}
+
+// ─── DairyNZ grazing targets ──────────────────────────────────────────────
+const DM_RANGES = [
+  { label:"Below residual",    sub:"Overgrazed — recovery risk", min:300,  max:1500, color:"#ef4444", emoji:"🔴", target:"DairyNZ residual target: 1,500–1,650 kg DM/ha (3.5–4 cm, 7–8 clicks)" },
+  { label:"Building — resting",sub:"Not ready to graze",         min:1500, max:2200, color:"#f97316", emoji:"🟠", target:"Below 2,000–2,400 APC target — continue resting" },
+  { label:"Pre-grazing ready", sub:"2–3 leaf stage",             min:2200, max:3200, color:"#22c55e", emoji:"🟢", target:"Ideal 2,800–3,200 kg DM/ha for 16–18 kg DM/cow/day" },
+  { label:"Surplus",           sub:"Quality declining",          min:3200, max:5000, color:"#eab308", emoji:"🟡", target:">3,500 = clover shading, tiller loss, ensile or top-priority graze" },
+];
+function getDMCat(dm) {
+  return DM_RANGES.find(r => dm >= r.min && dm < r.max) || DM_RANGES[3];
+}
+
+// ─── Pixel analysis ──────────────────────────────────────────────────────────
+function analysePixels(dataUrl) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const SIZE = 240;
+      const c = document.createElement("canvas");
+      c.width = SIZE; c.height = SIZE;
+      const ctx = c.getContext("2d");
+      ctx.drawImage(img, 0, 0, SIZE, SIZE);
+      const px = ctx.getImageData(0, 0, SIZE, SIZE).data;
+      const n = SIZE * SIZE;
+
+      let rSum=0, gSum=0, bSum=0;
+      let exGSum=0, gccSum=0, variSum=0, ngrdiSum=0;
+      let deepGreen=0, richGreen=0, midGreen=0, lightGreen=0;
+      let paleGreen=0, yellowGreen=0, brown=0, shadow=0, grey=0, white=0;
+      let greenPixelLumSum=0, greenPixelCount=0, greenPixelLumSqSum=0;
+
+      for (let i=0; i<px.length; i+=4) {
+        const r = px[i], g = px[i+1], b = px[i+2];
+        const lum = 0.299*r + 0.587*g + 0.114*b;
+        const sat = Math.max(r,g,b) - Math.min(r,g,b);
+        const sum3 = r + g + b + 0.001;
+
+        rSum += r; gSum += g; bSum += b;
+
+        const exG   = 2*g - r - b;
+        const gcc   = g / sum3;
+        const vari  = (g - r) / (g + r - b + 0.001);
+        const ngrdi = (g - r) / (g + r + 0.001);
+
+        exGSum += exG; gccSum += gcc; variSum += vari; ngrdiSum += ngrdi;
+
+        let hue = 0;
+        const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+        const d = mx - mn;
+        if (d > 0) {
+          if (mx === r)      hue = ((g - b) / d) % 6;
+          else if (mx === g) hue = ((b - r) / d) + 2;
+          else               hue = ((r - g) / d) + 4;
+          hue *= 60; if (hue < 0) hue += 360;
+        }
+
+        if (lum > 238)                            { white++;  continue; }
+        if (sat < 16 && lum > 50 && lum < 215)   { grey++;   continue; }
+        if (lum < 32)                             { shadow++; continue; }
+
+        const isGreenHue = hue >= 55 && hue <= 170;
+        const isGreenDominant = g > r && g > b && exG > 5;
+
+        if (isGreenHue || isGreenDominant) {
+          greenPixelLumSum += lum;
+          greenPixelLumSqSum += lum*lum;
+          greenPixelCount++;
+
+          if (lum < 110 && exG > 35 && hue >= 80 && hue <= 150 && sat > 30) { deepGreen++; continue; }
+          if (lum >= 90 && lum < 150 && exG > 25 && hue >= 75 && hue <= 155 && sat > 22) { richGreen++; continue; }
+          if (lum >= 125 && lum < 185 && exG > 12 && hue >= 70 && hue <= 160 && sat > 14) { midGreen++; continue; }
+          if (lum >= 165 && lum < 225 && hue >= 65 && hue <= 160 && sat > 10) { lightGreen++; continue; }
+          if (lum >= 200 && exG > 3 && sat > 6) { paleGreen++; continue; }
+          if (hue >= 40 && hue < 75 && lum > 100 && sat > 15) { yellowGreen++; continue; }
+        }
+
+        if (hue >= 15 && hue < 50 && r > g && r > b && lum > 38 && lum < 195 && sat > 8) { brown++; continue; }
+      }
+
+      const dP = deepGreen/n, rP = richGreen/n, mP = midGreen/n, lP = lightGreen/n;
+      const pP = paleGreen/n, yP = yellowGreen/n, bP = brown/n, dkP = shadow/n;
+      const grP = grey/n, whP = white/n;
+      const grassTotal = dP + rP + mP + lP + pP + yP;
+
+      const avgR = rSum/n, avgG = gSum/n, avgB = bSum/n;
+      const avgExG   = exGSum / n;
+      const avgGCC   = gccSum / n;
+      const avgVARI  = variSum / n;
+      const avgNGRDI = ngrdiSum / n;
+
+      const primaryDetect = grassTotal >= 0.12 && (avgExG > 6 || avgGCC > 0.36);
+      const darkGrassDetect = (dkP > 0.15) && (avgG > avgR) && (avgG > avgB * 0.95);
+      const weakGrassDetect = (avgG - avgR > 3) && (avgGCC > 0.33) && (grP + whP < 0.30);
+      const grassDetected = primaryDetect || darkGrassDetect || weakGrassDetect;
+
+      if (!grassDetected) {
+        resolve({ grassDetected: false, grassPct: Math.round(grassTotal * 100) });
+        return;
+      }
+
+      const greenMean = greenPixelCount ? greenPixelLumSum / greenPixelCount : 0;
+      const greenVar  = greenPixelCount ? (greenPixelLumSqSum / greenPixelCount) - greenMean * greenMean : 0;
+      const greenStdDev = Math.sqrt(Math.max(0, greenVar));
+      const uniformity  = Math.max(0, 1 - greenStdDev / 60);
+
+      const isLawn = (mP > 0.28 && dP < 0.08 && dkP < 0.06 && bP < 0.08 && uniformity > 0.45 && avgGCC > 0.36);
+      const isTallFescue = !isLawn && (dP > 0.15 && dkP > 0.08 && rP > 0.15 && lP < 0.12);
+      const isKikuyu = !isLawn && (lP > 0.25 && dP < 0.10 && mP > 0.20 && yP < 0.15);
+      const swardType = isLawn ? "lawn" : isTallFescue ? "fescue" : isKikuyu ? "kikuyu" : "ryegrass";
+
+      let visualHeightCm;
+      if (isLawn) {
+        visualHeightCm = 2 + mP * 5 + lP * 6 + yP * 4 + pP * 3;
+      } else if (isKikuyu) {
+        visualHeightCm = 3 + dP * 20 + rP * 14 + mP * 9 + lP * 6 + yP * 5 + dkP * 9;
+      } else {
+        const shadowGate = 0.5 + Math.min(1, dkP / 0.10) * 0.5;
+        const denseContribution = (dP * 28 + rP * 17) * shadowGate;
+        visualHeightCm = denseContribution + mP * 11 + lP * 5 + pP * 3 + yP * 7 + dkP * 13 + bP * 1 + Math.max(0, (avgG - avgR)) / 5;
+      }
+      const heightCm = Math.max(2, Math.min(40, Math.round(visualHeightCm)));
+
+      const compressRatio = isLawn ? 1.5 : isTallFescue ? 3.0 : isKikuyu ? 3.2 : 2.7;
+      const compressedCm = Math.max(0.3, heightCm / compressRatio);
+
+      const cloverPresent = !isLawn && lP > 0.08 && yP < 0.22 && rP > 0.08;
+      const postGrazing = heightCm <= 8 || (bP > 0.18 && heightCm < 12);
+      const leafStage =
+        isLawn         ? "Mown" :
+        heightCm <= 6  ? "Residual" :
+        heightCm <= 10 ? "1.0" :
+        heightCm <= 14 ? "1.5–2.0" :
+        heightCm <= 18 ? "2.0–2.5" :
+        heightCm <= 24 ? "2.5–3.0" :
+        "3.0+";
+      const denseVeg = dP + rP;
+      const quality =
+        isLawn ? "Lawn" :
+        (denseVeg > 0.45 && bP < 0.08 && yP < 0.12) ? "High" :
+        (denseVeg > 0.22 || mP > 0.32) ? "Medium" :
+        "Low";
+      const growthRate = isLawn ? 0 : Math.max(15, Math.min(180, Math.round(
+        40 + (dP * 170) + (rP * 95) + (mP * 40) - (yP * 55) - (bP * 35)
+      )));
+      const confidence =
+        (grassTotal > 0.60 && avgExG > 25 && greenStdDev < 35) ? "high" :
+        (grassTotal > 0.35 && avgExG > 12) ? "medium" : "low";
+
+      resolve({
+        grassDetected: true,
+        swardType, isLikelyLawn: isLawn,
+        heightCm, compressedCm,
+        quality, leafStage, cloverPresent, postGrazing,
+        greenPct: Math.round(grassTotal * 100),
+        brownPct: Math.round(bP * 100),
+        deepPct: dP, richPct: rP, midPct: mP, lightPct: lP,
+        yellowPct: yP, shadowPct: dkP,
+        avgExG, avgGCC, avgVARI, avgNGRDI,
+        uniformity: Math.round(uniformity * 100) / 100,
+        growthRate, confidence,
+      });
+    };
+    img.onerror = () => resolve({ grassDetected: false, grassPct: 0 });
+    img.src = dataUrl;
+  });
+}
+
+function computeResult(stats, season) {
+  const { heightCm, compressedCm, quality, leafStage, cloverPresent, postGrazing,
+          isLikelyLawn, swardType, greenPct, brownPct,
+          deepPct, richPct, yellowPct, shadowPct,
+          avgNGRDI, avgExG, avgGCC,
+          growthRate, confidence, uniformity } = stats;
+
+  const baseK =
+    swardType === "lawn"   ? 170 :
+    swardType === "fescue" ? 260 :
+    swardType === "kikuyu" ? 230 :
+    280;
+
+  const seasonFactor = season.label === "Winter" ? 0.90 : season.label === "Summer" ? 1.05 : 1.00;
+  const k = baseK * seasonFactor;
+  const baseIntercept = isLikelyLawn ? 200 : 500;
+  let kgDMperHa = compressedCm * k + baseIntercept;
+
+  const densityAdj = (deepPct * 400) + (richPct * 180);
+  const stemmyAdj = yellowPct * -380;
+  const bareAdj = (brownPct / 100) * -320;
+  const cloverAdj = cloverPresent ? 60 : 0;
+  const colourAdjust = isLikelyLawn ? 0 : (densityAdj + stemmyAdj + bareAdj + cloverAdj);
+  const maxAdj = kgDMperHa * 0.15;
+  const boundedAdj = Math.max(-maxAdj, Math.min(maxAdj, colourAdjust));
+  kgDMperHa += boundedAdj;
+
+  if (!isLikelyLawn) {
+    const ngrdiBase = Math.max(0, avgNGRDI) * 6000 + 500;
+    const greenCoverage = Math.max(0.6, Math.min(1.15, (greenPct / 100) / 0.75));
+    const ngrdiEstimate = ngrdiBase * greenCoverage;
+    kgDMperHa = (kgDMperHa * 0.35) + (ngrdiEstimate * 0.65);
+    kgDMperHa -= yellowPct * 400;
+    kgDMperHa -= (brownPct / 100) * 350;
+    if (cloverPresent) kgDMperHa += 80;
+  }
+
+  kgDMperHa = Math.round(Math.max(isLikelyLawn ? 200 : 500, Math.min(5500, kgDMperHa)));
+
+  let notes, recommendation;
+
+  if (isLikelyLawn) {
+    const lawnDesc = heightCm <= 3 ? "freshly mown" : heightCm <= 5 ? "well-maintained" : "unmown";
+    const lawnRange = heightCm <= 3 ? "500-800" : heightCm <= 6 ? "800-1,500" : "1,500-2,200";
+    notes = "Lawn detected (" + lawnDesc + ", ~" + heightCm + " cm, " + greenPct + "% green cover). Lawn DM equivalent: ~" + kgDMperHa.toLocaleString() + " kg DM/ha. Typical lawn range is " + lawnRange + " kg DM/ha. Lawn species have finer blades and lower DM density than NZ perennial ryegrass.";
+    recommendation = "For accurate dairy pasture readings, photograph actual farm paddocks from 1 m height, straight down.";
+    return { kgDMperHa, heightCm, confidence, quality, leafStage, cloverPresent, postGrazing, isLikelyLawn, swardType, notes, recommendation, growthRate };
+  }
+
+  const swardPrefix = swardType === "fescue" ? "Tall fescue paddock: " : swardType === "kikuyu" ? "Kikuyu paddock: " : "";
+
+  if (kgDMperHa < 1500) {
+    const sev = kgDMperHa < 1000 ? "severely overgrazed" : "below residual target";
+    notes = swardPrefix + "Pasture is " + sev + " at ~" + heightCm + " cm visual (" + compressedCm.toFixed(1) + " cm compressed) with " + greenPct + "% green cover. DairyNZ target post-grazing residual is 1,500-1,650 kg DM/ha (3.5-4 cm compressed, 7-8 RPM clicks).";
+    recommendation = kgDMperHa < 1000
+      ? "Critical — remove stock immediately. Residuals this low damage tiller survival. Rest minimum 18-20 days before re-entry."
+      : "Remove cows now. Rest this paddock and prioritise higher-cover paddocks. Target 1,500-1,650 kg DM/ha residuals.";
+  } else if (kgDMperHa < 2000) {
+    const daysEst = Math.round((2500 - kgDMperHa) / Math.max(growthRate, 20));
+    notes = swardPrefix + "Pasture rebuilding at ~" + heightCm + " cm visual (" + compressedCm.toFixed(1) + " cm compressed), " + greenPct + "% green cover. At " + kgDMperHa.toLocaleString() + " kg DM/ha, below DairyNZ's APC target of 2,000-2,400 kg DM/ha. Estimated " + daysEst + " days to reach ideal pre-grazing cover.";
+    recommendation = "Continue resting — not ready to graze. Target minimum 2,200 kg DM/ha (2-leaf stage) before re-entry.";
+  } else if (kgDMperHa < 2800) {
+    notes = swardPrefix + "Good " + season.label.toLowerCase() + " cover at ~" + heightCm + " cm visual, " + leafStage + " leaf stage, " + greenPct + "% green (uniformity " + Math.round(uniformity*100) + "%). At " + kgDMperHa.toLocaleString() + " kg DM/ha, approaching DairyNZ's pre-grazing target of 2,800-3,200 kg DM/ha." + (cloverPresent ? " White clover visible — boosts ME and palatability." : "");
+    recommendation = kgDMperHa < 2400
+      ? "Almost ready — graze within 3-5 days when cover reaches 2,400+ kg DM/ha."
+      : (cloverPresent
+          ? "Excellent ryegrass/clover mix at pre-grazing cover. Graze within 1-2 days. Target 1,500-1,650 kg DM/ha residual."
+          : "Good cover — graze within 2-3 days. Target 1,500-1,650 kg DM/ha post-grazing residual.");
+  } else if (kgDMperHa < 3500) {
+    notes = swardPrefix + "Pre-grazing yield ~" + kgDMperHa.toLocaleString() + " kg DM/ha at " + heightCm + " cm. At the ideal pre-grazing range (2,800-3,200 kg DM/ha) which provides 16-18 kg DM/cow/day intake. " + (yellowPct > 0.18 ? "Yellow-green tones indicate some stem elongation — quality beginning to decline." : "Good quality vegetative sward.");
+    recommendation = cloverPresent
+      ? "High-quality paddock — ideal for peak cows. Graze immediately. Target 1,500-1,650 kg DM/ha residual. Clover will maximise milksolids response."
+      : "Graze immediately — covers above 3,200 kg DM/ha risk quality loss. Target 1,500-1,650 kg DM/ha residuals.";
+  } else {
+    notes = swardPrefix + "Surplus at ~" + heightCm + " cm (" + kgDMperHa.toLocaleString() + " kg DM/ha) — above DairyNZ's 3,500 kg DM/ha threshold. " + (yellowPct > 0.20 ? "Strong yellow-green signal indicates reproductive/stemmy growth — metabolisable energy (ME) declining rapidly." : "Dense canopy causing dead-leaf accumulation and clover shading. Tiller numbers decline when cover >3,500 kg DM/ha.") + " Feed quality deteriorating — action required now.";
+    recommendation = "Act immediately — remove as silage, or allocate to highest-producing cows. DairyNZ does not recommend pre-graze topping. Getting on top of surplus now prevents quality loss cascading through the rotation.";
+  }
+
+  return { kgDMperHa, heightCm, confidence, quality, leafStage, cloverPresent, postGrazing, isLikelyLawn, swardType, notes, recommendation, growthRate };
+}
+
+// ── Colours / font ───────────────────────────────────────────────────────────
+const C = {
+  bg:"#f2f2f7", card:"#fff", text:"#111", textSec:"#6b7280", textTert:"#9ca3af",
+  green:"#1a5c3a", greenLight:"#e8f5ee", border:"#e5e7eb", red:"#ef4444", redLight:"#fef2f2",
+};
+const F = "'SF Pro Display',-apple-system,BlinkMacSystemFont,sans-serif";
+
+function PastureScan() {
+  const [screen, setScreen]               = useState("home");
+  const [capturedImage, setCapturedImage] = useState(null);
+  const [result, setResult]               = useState(null);
+  const [noGrass, setNoGrass]             = useState(null);
+  const [season, setSeason]               = useState(getCurrentSeason);
+  const [history, setHistory]             = useState(() => {
+    try { return JSON.parse(localStorage.getItem("pasturescan_history") || "[]"); } catch(e) { return []; }
+  });
+  const [activeTab, setActiveTab]         = useState("metrics");
+  const [progress, setProgress]           = useState(0);
+  const [step, setStep]                   = useState(0);
+  const [showSeason, setShowSeason]       = useState(false);
+  const [paddockName, setPaddockName]     = useState("");
+  const [viewingReading, setViewingReading] = useState(null);
+  const [editingName, setEditingName]     = useState(false);
+  const [editNameVal, setEditNameVal]     = useState("");
+
+  // Auth state
+  const [user, setUser]                   = useState(() => {
+    try { const u = localStorage.getItem("pasturescan_user"); return u ? JSON.parse(u) : null; } catch(e) { return null; }
+  });
+  const [authScreen, setAuthScreen]       = useState(null);
+  const [authMode, setAuthMode]           = useState("login");
+  const [authForm, setAuthForm]           = useState({ name:"", email:"", password:"", farmName:"" });
+  const [authError, setAuthError]         = useState("");
+  const [authLoading, setAuthLoading]     = useState(false);
+  const [shareCode, setShareCode]         = useState(null);
+  const [importCode, setImportCode]       = useState("");
+  const [importResult, setImportResult]   = useState(null);
+  const [exportLoading, setExportLoading] = useState(false);
+
+  const seasonRef = useRef(season);
+  const fileRef   = useRef(null);
+
+  // Persist history to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem("pasturescan_history", JSON.stringify(history));
+  }, [history]);
+
+  // Persist user to localStorage
+  useEffect(() => {
+    if (user) localStorage.setItem("pasturescan_user", JSON.stringify(user));
+    else localStorage.removeItem("pasturescan_user");
+  }, [user]);
+
+  const setSeasonAndRef = s => { setSeason(s); seasonRef.current = s; };
+  const openCamera = () => { fileRef.current && fileRef.current.click(); };
+
+  // ── Auth helpers ──────────────────────────────────────────────────────────
+  const uKey = email => "user:" + email.toLowerCase().trim();
+  const rKey = email => "readings:" + email.toLowerCase().trim();
+
+  const signup = async () => {
+    setAuthError(""); setAuthLoading(true);
+    const { name, email, farmName, password } = authForm;
+    if (!name.trim() || !email.trim() || !password.trim()) {
+      setAuthError("Please fill in all fields."); setAuthLoading(false); return;
+    }
+    if (!/^[^@]+@[^@]+\.[^@]+$/.test(email)) {
+      setAuthError("Enter a valid email address."); setAuthLoading(false); return;
+    }
+    if (password.length < 6) {
+      setAuthError("Password must be at least 6 characters."); setAuthLoading(false); return;
+    }
+    try {
+      let existing = null;
+      try { existing = await window.storage.get(uKey(email)); } catch(e) {}
+      if (existing) { setAuthError("An account with this email already exists."); setAuthLoading(false); return; }
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      const u = { id, name:name.trim(), email:email.toLowerCase().trim(), farmName:farmName.trim(), ph:btoa(password) };
+      await window.storage.set(uKey(email), JSON.stringify(u));
+      setUser(u); setAuthScreen(null); setAuthForm({ name:"", email:"", password:"", farmName:"" });
+    } catch(e) { setAuthError("Could not create account. Please try again."); }
+    setAuthLoading(false);
+  };
+
+  const login = async () => {
+    setAuthError(""); setAuthLoading(true);
+    const { email, password } = authForm;
+    if (!email.trim() || !password.trim()) { setAuthError("Enter your email and password."); setAuthLoading(false); return; }
+    try {
+      let stored = null;
+      try { stored = await window.storage.get(uKey(email)); } catch(e) {}
+      if (!stored) { setAuthError("No account found with this email."); setAuthLoading(false); return; }
+      const u = JSON.parse(stored.value);
+      if (u.ph !== btoa(password)) { setAuthError("Incorrect password."); setAuthLoading(false); return; }
+      setUser(u);
+      setAuthScreen(null); setAuthForm({ name:"", email:"", password:"", farmName:"" });
+    } catch(e) { setAuthError("Login error. Please try again."); }
+    setAuthLoading(false);
+  };
+
+  const logout = () => { setUser(null); setAuthScreen(null); };
+
+  const saveToCloud = useCallback(async readings => {
+    if (!user) return;
+    try {
+      const slim = readings.map(r => ({...r, image: r.image ? "__img__" : null}));
+      await window.storage.set(rKey(user.email), JSON.stringify(slim));
+    } catch(e) {}
+  }, [user]);
+
+  const generateShareCode = async () => {
+    if (!history.length) return;
+    const slim = history.map(r => ({
+      id:r.id, paddock:r.paddock, date:r.date, time:r.time, season:r.season,
+      kgDMperHa:r.result.kgDMperHa, heightCm:r.result.heightCm,
+      leafStage:r.result.leafStage, quality:r.result.quality,
+      cloverPresent:r.result.cloverPresent, confidence:r.result.confidence,
+      growthRate:r.result.growthRate,
+    }));
+    const farmInfo = user ? (user.farmName || user.name) : "Farm";
+    const payload = { farm:farmInfo, exported:new Date().toLocaleDateString("en-NZ"), readings:slim };
+    const raw = JSON.stringify(payload);
+    const b64 = btoa(encodeURIComponent(raw).replace(/%([0-9A-F]{2})/g, (_, p) => String.fromCharCode(parseInt(p,16))));
+    const code = b64.replace(/[^A-Z0-9]/gi, "").slice(0,20).toUpperCase();
+    try { await window.storage.set("share:" + code, raw, true); } catch(e) {}
+    setShareCode(code);
+  };
+
+  const importFromCode = async () => {
+    const code = importCode.trim().toUpperCase();
+    if (!code) return;
+    setImportResult(null);
+    try {
+      const stored = await window.storage.get("share:" + code, true);
+      if (!stored) { setImportResult({ success:false, error:"Code not found. Check and try again." }); return; }
+      const payload = JSON.parse(stored.value);
+      const imported = payload.readings.map(r => ({
+        id: r.id || Date.now() + Math.random(),
+        paddock: r.paddock || "Imported", date:r.date, time:r.time||"", season:r.season||"", image:null,
+        result: { kgDMperHa:r.kgDMperHa, heightCm:r.heightCm, leafStage:r.leafStage,
+          quality:r.quality, cloverPresent:r.cloverPresent||false, confidence:r.confidence||"medium",
+          growthRate:r.growthRate||80, notes:"", recommendation:"", postGrazing:false },
+      }));
+      setHistory(prev => { const ids = new Set(prev.map(x=>x.id)); return [...imported.filter(x=>!ids.has(x.id)), ...prev].sort((a,b)=>b.id-a.id); });
+      setImportResult({ success:true, count:imported.length, farm:payload.farm });
+    } catch(e) { setImportResult({ success:false, error:"Invalid code or data corrupted." }); }
+  };
+
+  const exportPDF = () => {
+    setExportLoading(true);
+    const farmName = user ? (user.farmName || user.name) : "Farm";
+    const rows = history.map(h => {
+      const cat = getDMCat(h.result.kgDMperHa);
+      return '<tr><td>' + h.paddock + '</td><td>' + h.date + '</td><td>' + (h.time||'') +
+        '</td><td>' + h.season + '</td><td style="font-weight:700;color:' + cat.color + '">' +
+        h.result.kgDMperHa.toLocaleString() + '</td><td>' + h.result.heightCm + ' cm</td><td>' +
+        h.result.leafStage + '</td><td>' + h.result.quality + '</td><td>' +
+        (h.result.cloverPresent ? 'Yes' : 'No') + '</td><td>' + h.result.growthRate +
+        '</td><td>' + Math.round(h.result.kgDMperHa/17) + '</td></tr>';
+    }).join('');
+    const dateStr = new Date().toLocaleDateString('en-NZ');
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>PastureScan Report</title>' +
+      '<style>body{font-family:-apple-system,sans-serif;padding:24px;color:#111}' +
+      'h1{color:#1a5c3a;font-size:22px;margin-bottom:4px}h2{font-size:13px;color:#6b7280;font-weight:400;margin-bottom:24px}' +
+      'table{width:100%;border-collapse:collapse;font-size:12px}' +
+      'th{background:#1a5c3a;color:#fff;padding:10px 8px;text-align:left;font-size:11px}' +
+      'td{padding:9px 8px;border-bottom:1px solid #e5e7eb}' +
+      'tr:nth-child(even) td{background:#f9fafb}' +
+      '.legend{margin-top:16px;font-size:11px;color:#6b7280;border-top:1px solid #e5e7eb;padding-top:12px}' +
+      '@media print{body{padding:8px}}</style>' +
+      '</head><body><h1>PastureScan - Pasture Cover Report</h1>' +
+      '<h2>' + farmName + ' - ' + history.length + ' readings - Exported ' + dateStr + '</h2>' +
+      '<table><thead><tr><th>Paddock</th><th>Date</th><th>Time</th><th>Season</th>' +
+      '<th>kg DM/ha</th><th>Height</th><th>Leaf Stage</th><th>Quality</th>' +
+      '<th>Clover</th><th>Growth Rate</th><th>Cow-days/ha</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table>' +
+      '<div class="legend">DairyNZ Targets: Post-grazing residual &lt;1,500 kg DM/ha | Building 1,500-2,200 | Ideal pre-grazing 2,200-3,200 | Surplus &gt;3,200 kg DM/ha</div>' +
+      '</body></html>';
+    const blob = new Blob([html], { type:'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'PastureScan-' + dateStr.replace(/\//g,'-') + '.html';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setExportLoading(false);
+  };
+
+  // ── Video frame extraction ───────────────────────────────────────────────
+  const extractVideoFrames = (videoUrl, numFrames = 8) => new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "");
+    video.setAttribute("muted", "");
+    video.preload = "auto";
+    video.autoplay = false;
+    video.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0";
+    document.body.appendChild(video);
+
+    let resolved = false;
+    const cleanup = () => {
+      try { video.pause(); } catch(_) {}
+      try { video.removeAttribute("src"); video.load(); } catch(_) {}
+      try { document.body.removeChild(video); } catch(_) {}
+    };
+    const finish = (result) => { if (resolved) return; resolved = true; cleanup(); resolve(result); };
+    const fail = (err) => { if (resolved) return; resolved = true; cleanup(); reject(err); };
+    const overallTimeout = setTimeout(() => fail(new Error("Video timeout")), 25000);
+
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    const frames = [];
+    let targetSampleTimes = [];
+    let duration = 0;
+
+    const captureFrame = (index) => {
+      try {
+        const w = video.videoWidth || 640;
+        const h = video.videoHeight || 480;
+        if (w < 50 || h < 50) return false;
+        if (canvas.width !== 480) {
+          const scale = 480 / w;
+          canvas.width = 480;
+          canvas.height = Math.round(h * scale);
+        }
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const url = canvas.toDataURL("image/jpeg", 0.82);
+        if (url.length > 2000) {
+          frames.push({ url, angleDeg: Math.round((index / Math.max(1, numFrames - 1)) * 180), time: video.currentTime });
+          return true;
+        }
+      } catch(_) {}
+      return false;
+    };
+
+    const monitorPlayback = () => {
+      let frameIdx = 0;
+      const checkLoop = () => {
+        if (resolved) return;
+        while (frameIdx < targetSampleTimes.length && video.currentTime >= targetSampleTimes[frameIdx]) {
+          captureFrame(frameIdx);
+          frameIdx++;
+        }
+        if (frameIdx >= numFrames || video.ended || video.currentTime >= duration * 0.98) {
+          while (frameIdx < numFrames) { captureFrame(frameIdx); frameIdx++; }
+          clearTimeout(overallTimeout);
+          if (frames.length > 0) finish({ frames, duration });
+          else fail(new Error("No frames captured"));
+          return;
+        }
+        requestAnimationFrame(checkLoop);
+      };
+      requestAnimationFrame(checkLoop);
+    };
+
+    video.onloadedmetadata = () => {
+      duration = video.duration;
+      if (!duration || !isFinite(duration) || duration < 0.1) {
+        setTimeout(() => {
+          if (captureFrame(0)) { clearTimeout(overallTimeout); finish({ frames, duration: duration || 1 }); }
+          else fail(new Error("Invalid duration and no frame captured"));
+        }, 500);
+        return;
+      }
+      const startT = duration * 0.05;
+      const endT = duration * 0.95;
+      for (let i = 0; i < numFrames; i++) {
+        targetSampleTimes.push(startT + ((endT - startT) * (numFrames === 1 ? 0.5 : i / (numFrames - 1))));
+      }
+    };
+
+    video.onloadeddata = () => {
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        playPromise.then(() => monitorPlayback()).catch(() => {
+          setTimeout(() => {
+            if (captureFrame(0)) { clearTimeout(overallTimeout); finish({ frames, duration: duration || 1 }); }
+            else fail(new Error("Could not play video"));
+          }, 300);
+        });
+      } else { monitorPlayback(); }
+    };
+
+    video.onerror = () => fail(new Error("Video error"));
+    video.onended = () => {
+      if (!resolved && frames.length > 0) { clearTimeout(overallTimeout); finish({ frames, duration }); }
+    };
+
+    video.src = videoUrl;
+    video.load();
+  });
+
+  const aggregateFrameStats = (frameStatsArray) => {
+    const valid = frameStatsArray.filter(s => s && s.grassDetected);
+    if (valid.length === 0) {
+      const anyDetect = frameStatsArray.find(s => s) || { grassPct: 0 };
+      return { grassDetected: false, grassPct: anyDetect.grassPct };
+    }
+    const avg = (key) => valid.reduce((s, x) => s + (x[key] || 0), 0) / valid.length;
+    const median = (key) => {
+      const sorted = valid.map(x => x[key] || 0).sort((a,b) => a-b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid-1] + sorted[mid]) / 2;
+    };
+    const mode = (key) => {
+      const counts = {};
+      valid.forEach(v => { counts[v[key]] = (counts[v[key]]||0) + 1; });
+      return Object.keys(counts).reduce((a,b) => counts[a] > counts[b] ? a : b);
+    };
+    const heights = valid.map(v => v.heightCm);
+    const heightMean = heights.reduce((s,x)=>s+x,0) / heights.length;
+    const heightVar = heights.reduce((s,x) => s + Math.pow(x-heightMean,2), 0) / heights.length;
+    const heightStdDev = Math.sqrt(heightVar);
+    const variancePenalty = heightStdDev > 4 ? 1 : heightStdDev > 2 ? 2 : 3;
+    const confTier = valid.reduce((s, x) => s + (x.confidence === "high" ? 3 : x.confidence === "medium" ? 2 : 1), 0) / valid.length;
+    const finalConfTier = Math.min(confTier, variancePenalty);
+    const confidence = finalConfTier >= 2.5 ? "high" : finalConfTier >= 1.5 ? "medium" : "low";
+
+    return {
+      grassDetected: true,
+      swardType: mode("swardType"),
+      isLikelyLawn: valid.filter(v => v.isLikelyLawn).length > valid.length / 2,
+      heightCm: Math.round(median("heightCm")),
+      compressedCm: median("heightCm") / 2.7,
+      quality: mode("quality"),
+      leafStage: mode("leafStage"),
+      cloverPresent: valid.filter(v => v.cloverPresent).length > valid.length / 2,
+      postGrazing: valid.filter(v => v.postGrazing).length > valid.length / 2,
+      greenPct: Math.round(avg("greenPct")),
+      brownPct: Math.round(avg("brownPct")),
+      deepPct: avg("deepPct"), richPct: avg("richPct"),
+      midPct: avg("midPct"), lightPct: avg("lightPct"),
+      yellowPct: avg("yellowPct"), shadowPct: avg("shadowPct"),
+      avgExG: avg("avgExG"), avgGCC: avg("avgGCC"),
+      uniformity: avg("uniformity"),
+      growthRate: Math.round(avg("growthRate")),
+      confidence,
+      framesAnalysed: valid.length,
+      heightStdDev: Math.round(heightStdDev * 10) / 10,
+      spatialVariance: heightStdDev > 4 ? "high" : heightStdDev > 2 ? "moderate" : "low",
+    };
+  };
+
+  const runAnalysis = useCallback(async url => {
+    setNoGrass(null); setResult(null); setScreen("analyzing"); setProgress(0); setStep(0);
+    const cur = seasonRef.current;
+    const delay = ms => new Promise(r => setTimeout(r, ms));
+    setStep(0); setProgress(15); await delay(350);
+    setStep(1); setProgress(40);
+    const stats = await analysePixels(url);
+    await delay(300); setStep(2); setProgress(72); await delay(300);
+    setStep(3); setProgress(92); await delay(200);
+    setProgress(100); await delay(200);
+    if (!stats.grassDetected) { setNoGrass({ grassPct:stats.grassPct }); setScreen("no-grass"); }
+    else { setResult(computeResult(stats, cur)); setActiveTab("metrics"); setScreen("result"); }
+  }, []);
+
+  const runVideoAnalysis = useCallback(async videoUrl => {
+    setNoGrass(null); setResult(null); setScreen("analyzing"); setProgress(0); setStep(0);
+    const cur = seasonRef.current;
+    const delay = ms => new Promise(r => setTimeout(r, ms));
+    try {
+      setStep(0); setProgress(10); await delay(300);
+      setStep(1); setProgress(25);
+      let framesResult;
+      try { framesResult = await extractVideoFrames(videoUrl, 8); }
+      catch (err) {
+        setNoGrass({ grassPct: 0, error: "Couldn't process the video. Please try recording again, or use a single photo." });
+        setScreen("no-grass"); return;
+      }
+      const { frames, duration } = framesResult;
+      if (!frames || frames.length === 0) {
+        setNoGrass({ grassPct: 0, error: "Couldn't extract frames from the video. Please try again." });
+        setScreen("no-grass"); return;
+      }
+      setCapturedImage(frames[Math.floor(frames.length / 2)].url);
+      setStep(2); setProgress(50);
+      const frameStats = [];
+      for (let i = 0; i < frames.length; i++) {
+        const stats = await analysePixels(frames[i].url);
+        frameStats.push(stats);
+        setProgress(50 + Math.round((i + 1) / frames.length * 35));
+      }
+      setStep(3); setProgress(92); await delay(250);
+      const combined = aggregateFrameStats(frameStats);
+      combined.duration = duration;
+      setProgress(100); await delay(200);
+      if (!combined.grassDetected) {
+        setNoGrass({ grassPct: combined.grassPct, error: `Only ${combined.grassPct}% green pixels detected across ${frames.length} video frames. Ensure lens points at grass, not sky or ground.` });
+        setScreen("no-grass");
+      } else {
+        const r = computeResult(combined, cur);
+        r.framesAnalysed = combined.framesAnalysed;
+        r.spatialVariance = combined.spatialVariance;
+        r.heightStdDev = combined.heightStdDev;
+        r.isVideo = true;
+        setResult(r); setActiveTab("metrics"); setScreen("result");
+      }
+    } catch (err) {
+      setNoGrass({ grassPct: 0, error: "Something went wrong processing the video. Please try again." });
+      setScreen("no-grass");
+    }
+  }, []);
+
+  const handleFile = useCallback(e => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+    const isVideo = file.type.startsWith("video/");
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const url = ev.target.result;
+      setCapturedImage(url);
+      if (isVideo) runVideoAnalysis(url);
+      else runAnalysis(url);
+    };
+    reader.readAsDataURL(file);
+  }, [runAnalysis, runVideoAnalysis]);
+
+  const saveReading = useCallback(() => {
+    if (!result) return;
+    const newR = {
+      id: Date.now(), paddock: paddockName.trim() || "Reading " + (history.length + 1),
+      date: new Date().toLocaleDateString("en-NZ"),
+      time: new Date().toLocaleTimeString("en-NZ", { hour:"2-digit", minute:"2-digit" }),
+      image: capturedImage, result, season: season.label,
+    };
+    const next = [newR, ...history.slice(0, 49)];
+    setHistory(next);
+    saveToCloud(next);
+    setPaddockName(""); setResult(null); setCapturedImage(null); setScreen("home");
+  }, [result, capturedImage, paddockName, season, history, saveToCloud]);
+
+  const fileInput = (
+    <input ref={fileRef} type="file" accept="video/*,image/*" capture="environment"
+      style={{ display:"none" }} onChange={handleFile}/>
+  );
+
+  // ── AUTH ────────────────────────────────────────────────────────────────────
+  if (authScreen) {
+    const isAccount = authScreen === "account";
+    return (
+      <div style={{ fontFamily:F, background:C.bg, minHeight:"100vh", maxWidth:430, margin:"0 auto" }}>
+        {fileInput}
+        <div style={{ background:C.green, padding:"52px 20px 20px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <button onClick={() => { setAuthScreen(null); setAuthError(""); setShareCode(null); setImportResult(null); }}
+            style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:20, padding:"7px 14px", color:"#fff", fontSize:13, fontWeight:600, cursor:"pointer" }}>← Back</button>
+          <div style={{ fontSize:16, fontWeight:700, color:"#fff" }}>
+            {isAccount ? "My Account" : authMode==="login" ? "Sign In" : "Create Account"}
+          </div>
+          <div style={{ width:70 }}/>
+        </div>
+        <div style={{ padding:"24px 20px 48px" }}>
+          {isAccount && user && (
+            <>
+              <div style={{ background:C.card, borderRadius:16, padding:"20px", marginBottom:14, boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:16 }}>
+                  <div style={{ width:52, height:52, borderRadius:26, background:C.green, display:"flex", alignItems:"center", justifyContent:"center", fontSize:22 }}>👤</div>
+                  <div>
+                    <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{user.name}</div>
+                    <div style={{ fontSize:13, color:C.textSec }}>{user.email}</div>
+                    {user.farmName && <div style={{ fontSize:12, color:C.green, fontWeight:600, marginTop:2 }}>🌿 {user.farmName}</div>}
+                  </div>
+                </div>
+                <div style={{ display:"flex", gap:10 }}>
+                  <div style={{ flex:1, background:C.greenLight, borderRadius:10, padding:"10px", textAlign:"center" }}>
+                    <div style={{ fontSize:20, fontWeight:800, color:C.green }}>{history.length}</div>
+                    <div style={{ fontSize:11, color:C.green }}>Readings</div>
+                  </div>
+                  <div style={{ flex:1, background:"#f5f5f5", borderRadius:10, padding:"10px", textAlign:"center" }}>
+                    <div style={{ fontSize:20, fontWeight:800, color:C.text }}>{history.length ? Math.round(history.reduce((s,h)=>s+h.result.kgDMperHa,0)/history.length).toLocaleString() : "—"}</div>
+                    <div style={{ fontSize:11, color:C.textSec }}>Avg kg DM/ha</div>
+                  </div>
+                </div>
+              </div>
+              <div style={{ background:C.card, borderRadius:16, padding:"18px 20px", marginBottom:12, boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
+                <div style={{ fontSize:15, fontWeight:700, color:C.text, marginBottom:4 }}>📤 Share Readings</div>
+                <div style={{ fontSize:13, color:C.textSec, marginBottom:12 }}>Generate a code to share your readings with another PastureScan user.</div>
+                {shareCode ? (
+                  <div>
+                    <div style={{ background:C.greenLight, borderRadius:12, padding:"14px", marginBottom:10, textAlign:"center" }}>
+                      <div style={{ fontSize:11, color:C.green, fontWeight:600, marginBottom:6 }}>Share this code</div>
+                      <div style={{ fontSize:22, fontWeight:800, color:C.green, letterSpacing:"3px", fontFamily:"monospace" }}>{shareCode}</div>
+                      <div style={{ fontSize:11, color:C.textSec, marginTop:6 }}>Valid for 7 days</div>
+                    </div>
+                    <button onClick={() => setShareCode(null)} style={{ width:"100%", background:"transparent", border:"1.5px solid "+C.border, borderRadius:12, padding:"12px", color:C.textSec, fontSize:14, fontWeight:600, cursor:"pointer" }}>Generate New Code</button>
+                  </div>
+                ) : (
+                  <button onClick={generateShareCode} disabled={!history.length}
+                    style={{ width:"100%", background:history.length?C.green:"#ccc", border:"none", borderRadius:12, padding:"14px", color:"#fff", fontSize:14, fontWeight:700, cursor:history.length?"pointer":"default" }}>
+                    📤 Generate Share Code ({history.length} readings)
+                  </button>
+                )}
+              </div>
+              <div style={{ background:C.card, borderRadius:16, padding:"18px 20px", marginBottom:12, boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
+                <div style={{ fontSize:15, fontWeight:700, color:C.text, marginBottom:4 }}>📥 Import Readings</div>
+                <div style={{ fontSize:13, color:C.textSec, marginBottom:12 }}>Enter a share code from another PastureScan user.</div>
+                <input value={importCode} onChange={e => setImportCode(e.target.value.toUpperCase())}
+                  placeholder="Enter share code"
+                  style={{ width:"100%", boxSizing:"border-box", padding:"12px 14px", border:"1.5px solid "+C.border, borderRadius:12, fontSize:15, fontFamily:"monospace", letterSpacing:"2px", marginBottom:10, outline:"none", color:C.text }} />
+                <button onClick={importFromCode} disabled={!importCode.trim()}
+                  style={{ width:"100%", background:importCode.trim()?C.green:"#ccc", border:"none", borderRadius:12, padding:"14px", color:"#fff", fontSize:14, fontWeight:700, cursor:importCode.trim()?"pointer":"default" }}>
+                  📥 Import
+                </button>
+                {importResult && (
+                  <div style={{ marginTop:10, padding:"12px 14px", background:importResult.success?"#f0fdf4":"#fef2f2", borderRadius:10, fontSize:13, color:importResult.success?"#166534":"#dc2626", fontWeight:600 }}>
+                    {importResult.success ? "Imported " + importResult.count + " readings from " + importResult.farm : importResult.error}
+                  </div>
+                )}
+              </div>
+              <div style={{ background:C.card, borderRadius:16, padding:"18px 20px", marginBottom:14, boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
+                <div style={{ fontSize:15, fontWeight:700, color:C.text, marginBottom:4 }}>📄 Export Report</div>
+                <div style={{ fontSize:13, color:C.textSec, marginBottom:12 }}>Download as an HTML report — open in browser then Print → Save as PDF.</div>
+                <button onClick={exportPDF} disabled={!history.length || exportLoading}
+                  style={{ width:"100%", background:history.length?"#0f766e":"#ccc", border:"none", borderRadius:12, padding:"14px", color:"#fff", fontSize:14, fontWeight:700, cursor:history.length?"pointer":"default" }}>
+                  {exportLoading ? "Preparing..." : "📄 Download Report (" + history.length + " readings)"}
+                </button>
+              </div>
+              <button onClick={logout} style={{ width:"100%", background:"transparent", border:"1.5px solid #fee2e2", borderRadius:12, padding:"14px", color:"#dc2626", fontSize:14, fontWeight:600, cursor:"pointer" }}>Sign Out</button>
+            </>
+          )}
+          {isAccount && !user && (
+            <div style={{ textAlign:"center", padding:"40px 0" }}>
+              <div style={{ fontSize:48, marginBottom:16 }}>🌿</div>
+              <div style={{ fontSize:18, fontWeight:700, color:C.text, marginBottom:8 }}>Sign in to PastureScan</div>
+              <div style={{ fontSize:14, color:C.textSec, marginBottom:24, lineHeight:1.5 }}>Save readings to the cloud, share with your team, and export reports.</div>
+              <button onClick={() => { setAuthScreen("auth"); setAuthMode("login"); }} style={{ background:C.green, border:"none", borderRadius:12, padding:"14px 32px", color:"#fff", fontSize:15, fontWeight:700, cursor:"pointer", marginBottom:12, width:"100%" }}>Sign In</button>
+              <button onClick={() => { setAuthScreen("auth"); setAuthMode("signup"); }} style={{ background:"transparent", border:"1.5px solid "+C.border, borderRadius:12, padding:"14px 32px", color:C.text, fontSize:15, fontWeight:700, cursor:"pointer", width:"100%" }}>Create Account</button>
+            </div>
+          )}
+          {authScreen === "auth" && (
+            <div style={{ background:C.card, borderRadius:16, padding:"24px 20px", boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
+              <div style={{ textAlign:"center", marginBottom:24 }}>
+                <div style={{ fontSize:40, marginBottom:8 }}>🌿</div>
+                <div style={{ fontSize:20, fontWeight:700, color:C.text }}>{authMode==="login" ? "Welcome back" : "Create account"}</div>
+                <div style={{ fontSize:13, color:C.textSec, marginTop:4 }}>{authMode==="login" ? "Sign in to sync your readings" : "Free account to save and share readings"}</div>
+              </div>
+              {authMode === "signup" && (
+                <>
+                  <div style={{ marginBottom:14 }}>
+                    <div style={{ fontSize:12, fontWeight:600, color:C.textSec, marginBottom:6 }}>YOUR NAME</div>
+                    <input value={authForm.name} onChange={e => setAuthForm(f=>({...f,name:e.target.value}))} placeholder="e.g. John Smith" style={{ width:"100%", boxSizing:"border-box", padding:"13px 14px", border:"1.5px solid "+C.border, borderRadius:12, fontSize:15, outline:"none", color:C.text }} />
+                  </div>
+                  <div style={{ marginBottom:14 }}>
+                    <div style={{ fontSize:12, fontWeight:600, color:C.textSec, marginBottom:6 }}>FARM NAME (OPTIONAL)</div>
+                    <input value={authForm.farmName} onChange={e => setAuthForm(f=>({...f,farmName:e.target.value}))} placeholder="e.g. Greenfield Dairy" style={{ width:"100%", boxSizing:"border-box", padding:"13px 14px", border:"1.5px solid "+C.border, borderRadius:12, fontSize:15, outline:"none", color:C.text }} />
+                  </div>
+                </>
+              )}
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontSize:12, fontWeight:600, color:C.textSec, marginBottom:6 }}>EMAIL</div>
+                <input value={authForm.email} onChange={e => setAuthForm(f=>({...f,email:e.target.value}))} type="email" placeholder="you@example.com" style={{ width:"100%", boxSizing:"border-box", padding:"13px 14px", border:"1.5px solid "+C.border, borderRadius:12, fontSize:15, outline:"none", color:C.text }} />
+              </div>
+              <div style={{ marginBottom:20 }}>
+                <div style={{ fontSize:12, fontWeight:600, color:C.textSec, marginBottom:6 }}>PASSWORD</div>
+                <input value={authForm.password} onChange={e => setAuthForm(f=>({...f,password:e.target.value}))} type="password" placeholder={authMode==="signup"?"Min. 6 characters":"Your password"} style={{ width:"100%", boxSizing:"border-box", padding:"13px 14px", border:"1.5px solid "+C.border, borderRadius:12, fontSize:15, outline:"none", color:C.text }} />
+              </div>
+              {authError && <div style={{ background:"#fef2f2", border:"1px solid #fee2e2", borderRadius:10, padding:"12px 14px", marginBottom:16, fontSize:13, color:"#dc2626", fontWeight:600 }}>⚠️ {authError}</div>}
+              <button onClick={authMode==="login" ? login : signup} disabled={authLoading}
+                style={{ width:"100%", background:authLoading?"#aaa":C.green, border:"none", borderRadius:12, padding:"16px", color:"#fff", fontSize:16, fontWeight:700, cursor:authLoading?"default":"pointer", marginBottom:14 }}>
+                {authLoading ? "Please wait..." : authMode==="login" ? "Sign In" : "Create Account"}
+              </button>
+              <button onClick={() => { setAuthMode(authMode==="login"?"signup":"login"); setAuthError(""); }}
+                style={{ width:"100%", background:"transparent", border:"none", padding:"8px", color:C.green, fontSize:14, fontWeight:600, cursor:"pointer" }}>
+                {authMode==="login" ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── HOME ────────────────────────────────────────────────────────────────────
+  if (screen === "home") {
+    const avg = history.length ? Math.round(history.reduce((s,h)=>s+h.result.kgDMperHa,0)/history.length) : null;
+    return (
+      <div style={{ fontFamily:F, background:C.bg, minHeight:"100vh", maxWidth:430, margin:"0 auto" }}>
+        {fileInput}
+        <div style={{ background:C.green, padding:"52px 20px 18px" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <button onClick={() => setAuthScreen("account")}
+                style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:20, width:36, height:36, color:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <circle cx="9" cy="9" r="8" stroke="white" strokeWidth="1.5" fill="none"/>
+                  <rect x="4.5" y="6" width="9" height="1.5" rx="0.75" fill="white"/>
+                  <rect x="4.5" y="8.25" width="9" height="1.5" rx="0.75" fill="white"/>
+                  <rect x="4.5" y="10.5" width="9" height="1.5" rx="0.75" fill="white"/>
+                </svg>
+              </button>
+              <div>
+                {user && <div style={{ fontSize:12, color:"rgba(255,255,255,0.65)", fontWeight:500, marginBottom:2 }}>{user.farmName || user.name}</div>}
+                <div style={{ fontSize:26, fontWeight:700, color:"#fff", letterSpacing:"-0.5px" }}>PastureScan</div>
+              </div>
+            </div>
+            <button onClick={() => setShowSeason(!showSeason)}
+              style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:20, padding:"7px 14px", color:"#fff", fontSize:13, fontWeight:600, cursor:"pointer" }}>
+              {season.label} ▾
+            </button>
+          </div>
+          {showSeason && (
+            <div style={{ marginTop:12, background:"rgba(255,255,255,0.12)", borderRadius:12, overflow:"hidden" }}>
+              {SEASONS.map(s => (
+                <button key={s.label} onClick={() => { setSeasonAndRef(s); setShowSeason(false); }}
+                  style={{ display:"block", width:"100%", padding:"11px 16px", background:season.label===s.label?"rgba(255,255,255,0.2)":"transparent", border:"none", borderBottom:"1px solid rgba(255,255,255,0.1)", fontSize:14, fontWeight:600, color:"#fff", textAlign:"left", cursor:"pointer" }}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div style={{ display:"flex", background:C.card, borderBottom:"1px solid "+C.border }}>
+          {[{ val:history.length, lbl:"Readings" }, { val:avg ? avg.toLocaleString() : "—", lbl:"Avg kg DM/ha" }].map((s,i) => (
+            <div key={i} style={{ flex:1, padding:"14px 0", textAlign:"center", borderRight:i===0?"1px solid "+C.border:"none" }}>
+              <div style={{ fontSize:22, fontWeight:700, color:C.text }}>{s.val}</div>
+              <div style={{ fontSize:11, color:C.textSec, marginTop:2, fontWeight:500 }}>{s.lbl}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding:"20px" }}>
+          <button onClick={openCamera}
+            style={{ width:"100%", background:C.green, border:"none", borderRadius:16, padding:"18px", color:"#fff", fontSize:17, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:10, boxShadow:"0 4px 20px rgba(26,92,58,0.3)" }}>
+            <span style={{ fontSize:22 }}>🎥</span> Measure Pasture
+          </button>
+          <div style={{ marginTop:10, padding:"12px 14px", background:C.card, borderRadius:12, border:"1px solid "+C.border }}>
+            <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:4, display:"flex", alignItems:"center", gap:6 }}>
+              <span>📐</span> How to measure
+            </div>
+            <div style={{ fontSize:12, color:C.textSec, lineHeight:1.5 }}>
+              Hold phone at waist height. Record a <strong>5-second video</strong> while sweeping through a 180° arc across the paddock. The app samples 8 frames across your sweep to give an accurate paddock-wide average.
+            </div>
+            <div style={{ fontSize:11, color:C.textTert, marginTop:6 }}>
+              Tip: a single photo also works if preferred.
+            </div>
+          </div>
+        </div>
+        {history.length > 0 && (
+          <div style={{ margin:"0 20px 48px" }}>
+            <div style={{ fontSize:12, fontWeight:700, color:C.textSec, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:10 }}>
+              Saved Readings ({history.length})
+            </div>
+            {history.map(h => {
+              const cat = getDMCat(h.result.kgDMperHa);
+              return (
+                <div key={h.id} onClick={() => { setViewingReading(h); setEditNameVal(h.paddock); setEditingName(false); setScreen("reading-detail"); }}
+                  style={{ background:C.card, borderRadius:14, padding:"13px 16px", marginBottom:10, display:"flex", gap:12, alignItems:"center", boxShadow:"0 1px 3px rgba(0,0,0,0.07)", cursor:"pointer" }}>
+                  {h.image && h.image !== "__img__"
+                    ? <img src={h.image} style={{ width:52, height:52, borderRadius:10, objectFit:"cover", flexShrink:0 }} alt="" />
+                    : <div style={{ width:52, height:52, borderRadius:10, background:cat.color+"22", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:22 }}>{cat.emoji}</div>
+                  }
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:15, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{h.paddock}</div>
+                    <div style={{ fontSize:12, color:C.textSec, marginTop:2 }}>{h.date} · {h.season}</div>
+                    <div style={{ fontSize:11, color:cat.color, fontWeight:600, marginTop:2 }}>{cat.label}</div>
+                  </div>
+                  <div style={{ textAlign:"right", flexShrink:0 }}>
+                    <div style={{ fontSize:22, fontWeight:800, color:cat.color }}>{h.result.kgDMperHa.toLocaleString()}</div>
+                    <div style={{ fontSize:10, color:C.textSec }}>kg DM/ha</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── ANALYSING ────────────────────────────────────────────────────────────────
+  if (screen === "analyzing") {
+    const steps = ["Extracting frames from sweep","Measuring canopy at each angle","Aggregating paddock readings","Applying DairyNZ formula"];
+    return (
+      <div style={{ fontFamily:F, background:C.bg, minHeight:"100vh", maxWidth:430, margin:"0 auto", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:24, padding:"0 32px" }}>
+        {fileInput}
+        {capturedImage && <img src={capturedImage} style={{ width:200, height:200, borderRadius:20, objectFit:"cover", boxShadow:"0 8px 32px rgba(0,0,0,0.12)" }} alt="" />}
+        <div style={{ textAlign:"center" }}>
+          <div style={{ fontSize:22, fontWeight:700, color:C.text }}>Analysing Sweep</div>
+          <div style={{ fontSize:14, color:C.textSec, marginTop:5 }}>Sampling 8 frames · Applying DairyNZ standards</div>
+        </div>
+        <div style={{ width:"100%", height:4, background:"#e5e7eb", borderRadius:2, overflow:"hidden" }}>
+          <div style={{ width:progress+"%", height:"100%", background:C.green, borderRadius:2, transition:"width 0.4s ease" }} />
+        </div>
+        <div style={{ alignSelf:"stretch", display:"flex", flexDirection:"column", gap:10 }}>
+          {steps.map((s,i) => (
+            <div key={i} style={{ display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ width:20, height:20, borderRadius:10, background:i<=step?C.green:"#e5e7eb", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, transition:"background 0.3s" }}>
+                {i<=step && <span style={{ color:"#fff", fontSize:11, fontWeight:700 }}>✓</span>}
+              </div>
+              <span style={{ fontSize:14, color:i<=step?C.text:C.textTert, fontWeight:i<=step?600:400 }}>{s}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ── NO GRASS ─────────────────────────────────────────────────────────────────
+  if (screen === "no-grass") {
+    return (
+      <div style={{ fontFamily:F, background:C.bg, minHeight:"100vh", maxWidth:430, margin:"0 auto" }}>
+        {fileInput}
+        <div style={{ position:"relative", height:220, overflow:"hidden", background:"#222" }}>
+          {capturedImage && <img src={capturedImage} style={{ width:"100%", height:"100%", objectFit:"cover", opacity:0.7 }} alt="" />}
+          <div style={{ position:"absolute", inset:0, background:"linear-gradient(to bottom,rgba(0,0,0,0.3),rgba(0,0,0,0.6))" }} />
+          <button onClick={() => { setCapturedImage(null); setNoGrass(null); setScreen("home"); }}
+            style={{ position:"absolute", top:52, left:16, width:40, height:40, background:"rgba(0,0,0,0.45)", backdropFilter:"blur(6px)", borderRadius:20, border:"none", color:"#fff", fontSize:17, cursor:"pointer" }}>←</button>
+          <div style={{ position:"absolute", bottom:16, left:16 }}>
+            <div style={{ fontSize:11, color:"rgba(255,255,255,0.8)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Detection result</div>
+            <div style={{ fontSize:28, fontWeight:800, color:"#fff" }}>No Grass Detected</div>
+          </div>
+        </div>
+        <div style={{ background:C.card, borderRadius:"20px 20px 0 0", marginTop:-8, padding:"20px" }}>
+          <div style={{ background:C.redLight, border:"1.5px solid rgba(239,68,68,0.2)", borderRadius:14, padding:"16px", marginBottom:20, display:"flex", gap:14, alignItems:"flex-start" }}>
+            <div style={{ fontSize:28, flexShrink:0 }}>🚫</div>
+            <div>
+              <div style={{ fontSize:15, fontWeight:700, color:"#991b1b", marginBottom:4 }}>No pasture found in this photo</div>
+              <div style={{ fontSize:13, color:"#b91c1c", lineHeight:1.5 }}>{noGrass && noGrass.error ? noGrass.error : "No pasture found in this photo. Please photograph grass from 1 metre above the canopy."}</div>
+            </div>
+          </div>
+          <div style={{ background:"#f9fafb", borderRadius:14, padding:"16px", marginBottom:20 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:12 }}>Tips for a good reading</div>
+            {[["🎥","Video sweep","Record 5 seconds while rotating 180° at waist height — samples across paddock"],["📍","Position","Hold phone at waist height, lens pointing down at the grass"],["🌿","Framing","Grass should fill the frame — no sky, paths or concrete"],["☀️","Lighting","Works best in natural daylight — avoid deep shadows"]].map(([icon,title,desc],i) => (
+              <div key={i} style={{ display:"flex", gap:12, marginBottom:i<3?12:0 }}>
+                <div style={{ fontSize:18, flexShrink:0 }}>{icon}</div>
+                <div>
+                  <div style={{ fontSize:13, fontWeight:600, color:C.text }}>{title}</div>
+                  <div style={{ fontSize:12, color:C.textSec, marginTop:2 }}>{desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => { setCapturedImage(null); setNoGrass(null); openCamera(); }}
+            style={{ width:"100%", background:C.green, border:"none", borderRadius:14, padding:"17px", color:"#fff", fontSize:16, fontWeight:700, cursor:"pointer", marginBottom:10 }}>
+            📸 Try Again
+          </button>
+          <button onClick={() => { setCapturedImage(null); setNoGrass(null); setScreen("home"); }}
+            style={{ width:"100%", background:"transparent", border:"1.5px solid "+C.border, borderRadius:14, padding:"15px", color:C.textSec, fontSize:15, fontWeight:600, cursor:"pointer" }}>
+            Go Home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── RESULT ───────────────────────────────────────────────────────────────────
+  if (screen === "result" && result) {
+    const cat = getDMCat(result.kgDMperHa);
+    const cowDays = Math.round(result.kgDMperHa / 17);
+    return (
+      <div style={{ fontFamily:F, background:C.bg, minHeight:"100vh", maxWidth:430, margin:"0 auto" }}>
+        {fileInput}
+        <div style={{ position:"relative", height:220, overflow:"hidden" }}>
+          {capturedImage && <img src={capturedImage} style={{ width:"100%", height:"100%", objectFit:"cover" }} alt="" />}
+          <div style={{ position:"absolute", inset:0, background:"linear-gradient(to bottom,rgba(0,0,0,0.3),rgba(0,0,0,0) 40%,rgba(0,0,0,0.6))" }} />
+          <button onClick={() => setScreen("home")}
+            style={{ position:"absolute", top:52, left:16, width:40, height:40, background:"rgba(0,0,0,0.45)", backdropFilter:"blur(6px)", borderRadius:20, border:"none", color:"#fff", fontSize:17, cursor:"pointer" }}>←</button>
+          <div style={{ position:"absolute", bottom:16, left:16, right:16, display:"flex", alignItems:"flex-end", justifyContent:"space-between" }}>
+            <div>
+              <div style={{ fontSize:11, color:"rgba(255,255,255,0.8)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:2 }}>Cover detected</div>
+              <div style={{ fontSize:42, fontWeight:800, color:"#fff", letterSpacing:"-1.5px", lineHeight:1 }}>{result.kgDMperHa.toLocaleString()}</div>
+              <div style={{ fontSize:14, color:"rgba(255,255,255,0.85)", fontWeight:500 }}>kg DM / ha</div>
+            </div>
+            <div style={{ background:cat.color, borderRadius:10, padding:"7px 13px" }}>
+              <div style={{ fontSize:12, color:"#fff", fontWeight:700 }}>{cat.emoji} {cat.label}</div>
+            </div>
+          </div>
+        </div>
+        <div style={{ background:C.card, borderRadius:"20px 20px 0 0", marginTop:-8 }}>
+          <div style={{ padding:"18px 20px 0", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <input value={paddockName} onChange={e => setPaddockName(e.target.value)}
+              placeholder="Tap to name this reading"
+              style={{ fontSize:20, fontWeight:700, color:C.text, border:"none", outline:"none", background:"transparent", flex:1, letterSpacing:"-0.3px" }} />
+            <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+              {result.isVideo && (
+                <div style={{ background:"#e0e7ff", borderRadius:8, padding:"4px 10px" }}>
+                  <div style={{ fontSize:11, color:"#4338ca", fontWeight:700 }}>🎥 {result.framesAnalysed} FRAMES</div>
+                </div>
+              )}
+              <div style={{ background:C.greenLight, borderRadius:8, padding:"4px 10px" }}>
+                <div style={{ fontSize:11, color:C.green, fontWeight:700 }}>{result.confidence.toUpperCase()}</div>
+              </div>
+            </div>
+          </div>
+          <div style={{ display:"flex", borderBottom:"1px solid "+C.border, marginTop:14, padding:"0 20px" }}>
+            {["metrics","cover","actions"].map(t => (
+              <button key={t} onClick={() => setActiveTab(t)}
+                style={{ flex:1, padding:"10px 0", background:"transparent", border:"none", borderBottom:activeTab===t?"2px solid "+C.text:"2px solid transparent", color:activeTab===t?C.text:C.textTert, fontSize:14, fontWeight:activeTab===t?700:500, cursor:"pointer", marginBottom:-1 }}>
+                {t === "metrics" ? "Metrics" : t === "cover" ? "Cover" : "Actions"}
+              </button>
+            ))}
+          </div>
+
+          {activeTab === "metrics" && (
+            <div style={{ padding:"20px" }}>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr" }}>
+                {[
+                  { lbl:"Cover", val:result.kgDMperHa.toLocaleString(), unit:"kg DM/ha" },
+                  { lbl:"Height", val:result.heightCm+"", unit:"cm" },
+                  { lbl:"Growth rate", val:result.growthRate+"", unit:"kg DM/ha/d" },
+                  { lbl:"Leaf stage", val:result.leafStage, unit:"" },
+                  { lbl:"Quality", val:result.quality, unit:"" },
+                  { lbl:"Cow-days/ha", val:cowDays+"", unit:"@ 17 kg DM/cow" },
+                ].map((m,i) => (
+                  <div key={i} style={{ padding:"16px 0", borderBottom:i<3?"1px solid "+C.border:"none", borderRight:i%3<2?"1px solid "+C.border:"none", paddingLeft:i%3===0?0:16 }}>
+                    <div style={{ fontSize:11, color:C.textSec, marginBottom:4, fontWeight:500 }}>{m.lbl}</div>
+                    <div style={{ fontSize:i===0?20:18, fontWeight:800, color:C.text }}>{m.val}</div>
+                    <div style={{ fontSize:10, color:C.textTert, marginTop:1 }}>{m.unit}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop:14, display:"flex", gap:10 }}>
+                <div style={{ flex:1, background:C.greenLight, borderRadius:12, padding:"12px 14px" }}>
+                  <div style={{ fontSize:11, color:C.green, fontWeight:600, marginBottom:3 }}>Clover</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:C.green }}>{result.cloverPresent ? "Present ✓" : "Not detected"}</div>
+                </div>
+                <div style={{ flex:1, background:"#f5f5f5", borderRadius:12, padding:"12px 14px" }}>
+                  <div style={{ fontSize:11, color:C.textSec, fontWeight:600, marginBottom:3 }}>Status</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:C.text }}>{result.postGrazing ? "Post-grazing" : "Pre-grazing"}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "cover" && (
+            <div style={{ padding:"20px" }}>
+              <div style={{ fontSize:12, color:C.textSec, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:14 }}>DairyNZ Grazing Target Ranges</div>
+              {DM_RANGES.map((r,i) => {
+                const isActive = result.kgDMperHa >= r.min && result.kgDMperHa < r.max;
+                const barPct = isActive ? Math.min(100, Math.max(5, (result.kgDMperHa-r.min)/(r.max-r.min)*100)) : 0;
+                return (
+                  <div key={i} style={{ marginBottom:14, background:isActive?"#f9fafb":"transparent", borderRadius:12, padding:isActive?"12px":"0 4px" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                        <div style={{ width:8, height:8, borderRadius:3, background:r.color }} />
+                        <span style={{ fontSize:13, fontWeight:isActive?700:500, color:isActive?C.text:C.textSec }}>{r.label}</span>
+                        {isActive && <span style={{ fontSize:10, background:C.greenLight, color:C.green, borderRadius:5, padding:"2px 7px", fontWeight:700 }}>you are here</span>}
+                      </div>
+                      <span style={{ fontSize:12, color:C.textSec }}>{r.min.toLocaleString()}–{r.max===5000?"5,000+":r.max.toLocaleString()}</span>
+                    </div>
+                    <div style={{ height:5, background:"#f0f0f0", borderRadius:3, overflow:"hidden" }}>
+                      <div style={{ width:barPct+"%", height:"100%", background:r.color, borderRadius:3, transition:"width 0.6s ease" }} />
+                    </div>
+                    {isActive && <div style={{ fontSize:11, color:C.textSec, marginTop:5 }}>{r.target}</div>}
+                  </div>
+                );
+              })}
+              <div style={{ background:"#f9fafb", borderRadius:12, padding:"14px 16px", marginTop:4 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:6 }}>Assessment</div>
+                <div style={{ fontSize:13, color:C.textSec, lineHeight:1.55 }}>{result.notes}</div>
+              </div>
+              {result.isVideo && (
+                <div style={{ background:"#eef2ff", border:"1px solid #c7d2fe", borderRadius:12, padding:"14px 16px", marginTop:12 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:"#4338ca", marginBottom:8, display:"flex", alignItems:"center", gap:6 }}>
+                    🎥 180° Sweep Analysis
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, fontSize:12, color:"#4338ca" }}>
+                    <div><strong>Frames sampled:</strong> {result.framesAnalysed}</div>
+                    <div><strong>Height variation:</strong> ±{result.heightStdDev} cm</div>
+                  </div>
+                  <div style={{ fontSize:12, color:"#6366f1", marginTop:8, lineHeight:1.5 }}>
+                    {result.spatialVariance === "high"
+                      ? "⚠️ High spatial variation across the paddock — consider walking to get multiple readings in problem areas."
+                      : result.spatialVariance === "moderate"
+                        ? "Moderate variation across the paddock — reading is representative but some areas differ."
+                        : "Low variation — paddock is uniform, reading is highly representative."}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === "actions" && (
+            <div style={{ padding:"20px 20px 0" }}>
+              <div style={{ background:C.greenLight, borderRadius:14, padding:"16px", marginBottom:14 }}>
+                <div style={{ fontSize:11, color:C.green, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:7 }}>DairyNZ Recommendation</div>
+                <div style={{ fontSize:15, color:C.green, fontWeight:600, lineHeight:1.5 }}>{result.recommendation}</div>
+              </div>
+              <div style={{ background:"#f9fafb", borderRadius:14, padding:"16px" }}>
+                <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:10 }}>Calculation details</div>
+                {[["Season",season.label],["Residual target","1,500–1,600 kg DM/ha"],["Pre-grazing target","2,800–3,200 kg DM/ha"]].map(([k,v],i) => (
+                  <div key={i} style={{ display:"flex", justifyContent:"space-between", marginBottom:i<2?8:0 }}>
+                    <span style={{ fontSize:13, color:C.textSec }}>{k}</span>
+                    <span style={{ fontSize:13, fontWeight:600, color:C.text }}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ padding:"16px 20px 36px", marginTop:4 }}>
+            <button onClick={saveReading}
+              style={{ width:"100%", background:C.green, border:"none", borderRadius:14, padding:"17px", color:"#fff", fontSize:16, fontWeight:700, cursor:"pointer", boxShadow:"0 4px 16px rgba(26,92,58,0.22)", marginBottom:10, display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+              💾 Save Reading
+            </button>
+            <button onClick={() => { setCapturedImage(null); setResult(null); openCamera(); }}
+              style={{ width:"100%", background:"transparent", border:"1.5px solid "+C.border, borderRadius:14, padding:"15px", color:C.textSec, fontSize:15, fontWeight:600, cursor:"pointer" }}>
+              📸 Take Another
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── READING DETAIL ────────────────────────────────────────────────────────────
+  if (screen === "reading-detail" && viewingReading) {
+    const h = viewingReading;
+    const cat = getDMCat(h.result.kgDMperHa);
+    const r = h.result;
+    const cowDays = Math.round(r.kgDMperHa / 17);
+    const saveName = () => {
+      const t = editNameVal.trim(); if (!t) return;
+      const updated = {...h, paddock:t};
+      setHistory(prev => prev.map(item => item.id===h.id ? updated : item));
+      setViewingReading(updated); setEditingName(false);
+    };
+    return (
+      <div style={{ fontFamily:F, background:C.bg, minHeight:"100vh", maxWidth:430, margin:"0 auto" }}>
+        {fileInput}
+        <div style={{ position:"relative", height:220, overflow:"hidden", background:"#1a5c3a" }}>
+          {h.image && h.image !== "__img__" && <img src={h.image} style={{ width:"100%", height:"100%", objectFit:"cover" }} alt="" />}
+          <div style={{ position:"absolute", inset:0, background:"linear-gradient(to bottom,rgba(0,0,0,0.35),rgba(0,0,0,0) 45%,rgba(0,0,0,0.6))" }} />
+          <button onClick={() => { setViewingReading(null); setScreen("home"); }}
+            style={{ position:"absolute", top:52, left:16, width:40, height:40, background:"rgba(0,0,0,0.45)", backdropFilter:"blur(6px)", borderRadius:20, border:"none", color:"#fff", fontSize:17, cursor:"pointer" }}>←</button>
+          <div style={{ position:"absolute", bottom:16, left:16, right:16, display:"flex", alignItems:"flex-end", justifyContent:"space-between" }}>
+            <div>
+              <div style={{ fontSize:11, color:"rgba(255,255,255,0.75)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:2 }}>{h.date} · {h.season}</div>
+              <div style={{ fontSize:38, fontWeight:800, color:"#fff", letterSpacing:"-1px", lineHeight:1 }}>{r.kgDMperHa.toLocaleString()}</div>
+              <div style={{ fontSize:13, color:"rgba(255,255,255,0.85)", fontWeight:500 }}>kg DM / ha</div>
+            </div>
+            <div style={{ background:cat.color, borderRadius:10, padding:"7px 13px" }}>
+              <div style={{ fontSize:12, color:"#fff", fontWeight:700 }}>{cat.emoji} {cat.label}</div>
+            </div>
+          </div>
+        </div>
+        <div style={{ background:C.card, borderRadius:"20px 20px 0 0", marginTop:-8 }}>
+          <div style={{ padding:"18px 20px 16px", display:"flex", alignItems:"center", gap:10, borderBottom:"1px solid "+C.border }}>
+            {editingName ? (
+              <>
+                <input autoFocus value={editNameVal} onChange={e => setEditNameVal(e.target.value)}
+                  onKeyDown={e => e.key==="Enter" && saveName()}
+                  style={{ flex:1, fontSize:19, fontWeight:700, color:C.text, border:"none", borderBottom:"2px solid "+C.green, outline:"none", background:"transparent", padding:"2px 0" }} />
+                <button onClick={saveName} style={{ background:C.green, border:"none", borderRadius:10, padding:"8px 16px", color:"#fff", fontSize:13, fontWeight:700, cursor:"pointer" }}>Save</button>
+                <button onClick={() => setEditingName(false)} style={{ background:"#f0f0f0", border:"none", borderRadius:10, padding:"8px 12px", color:C.textSec, fontSize:13, cursor:"pointer" }}>Cancel</button>
+              </>
+            ) : (
+              <>
+                <div style={{ flex:1, fontSize:19, fontWeight:700, color:C.text }}>{h.paddock}</div>
+                <button onClick={() => { setEditNameVal(h.paddock); setEditingName(true); }}
+                  style={{ background:"#f0f0f0", border:"none", borderRadius:10, padding:"8px 14px", color:C.textSec, fontSize:13, fontWeight:600, cursor:"pointer" }}>✏️ Edit</button>
+              </>
+            )}
+          </div>
+          <div style={{ padding:"16px 20px 0" }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr" }}>
+              {[{ lbl:"Cover", val:r.kgDMperHa.toLocaleString(), unit:"kg DM/ha" },{ lbl:"Height", val:r.heightCm+"", unit:"cm" },{ lbl:"Growth rate", val:r.growthRate+"", unit:"kg DM/ha/d" },{ lbl:"Leaf stage", val:r.leafStage, unit:"" },{ lbl:"Quality", val:r.quality, unit:"" },{ lbl:"Cow-days/ha", val:cowDays+"", unit:"@ 17 kg DM" }].map((m,i) => (
+                <div key={i} style={{ padding:"14px 0", borderBottom:i<3?"1px solid "+C.border:"none", borderRight:i%3<2?"1px solid "+C.border:"none", paddingLeft:i%3===0?0:14 }}>
+                  <div style={{ fontSize:11, color:C.textSec, marginBottom:3 }}>{m.lbl}</div>
+                  <div style={{ fontSize:i===0?18:16, fontWeight:800, color:C.text }}>{m.val}</div>
+                  <div style={{ fontSize:10, color:C.textTert }}>{m.unit}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div style={{ padding:"14px 20px", display:"flex", gap:8 }}>
+            {[
+              {bg:r.cloverPresent?C.greenLight:"#f5f5f5",lbl:"Clover",val:r.cloverPresent?"Present ✓":"Not detected",c:r.cloverPresent?C.green:C.text},
+              {bg:"#f5f5f5",lbl:"Status",val:r.postGrazing?"Post-grazing":"Pre-grazing",c:C.text},
+              {bg:C.greenLight,lbl:"Confidence",val:r.confidence?.toUpperCase()||"",c:C.green}
+            ].map((p,i)=>(
+              <div key={i} style={{ flex:1, background:p.bg, borderRadius:10, padding:"8px 10px" }}>
+                <div style={{ fontSize:10, color:p.c, fontWeight:600, opacity:0.7 }}>{p.lbl}</div>
+                <div style={{ fontSize:12, fontWeight:700, color:p.c, marginTop:2 }}>{p.val}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ margin:"0 20px 12px", background:"#f9fafb", borderRadius:14, padding:"14px 16px" }}>
+            <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:6 }}>Assessment</div>
+            <div style={{ fontSize:13, color:C.textSec, lineHeight:1.55 }}>{r.notes}</div>
+          </div>
+          <div style={{ margin:"0 20px", background:C.greenLight, borderRadius:14, padding:"14px 16px", marginBottom:14 }}>
+            <div style={{ fontSize:11, color:C.green, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}>DairyNZ Recommendation</div>
+            <div style={{ fontSize:13, color:C.green, fontWeight:600, lineHeight:1.5 }}>{r.recommendation}</div>
+          </div>
+          <div style={{ padding:"4px 20px 40px" }}>
+            <button onClick={() => { setHistory(prev => prev.filter(item => item.id!==h.id)); setViewingReading(null); setScreen("home"); }}
+              style={{ width:"100%", background:"transparent", border:"1.5px solid #fee2e2", borderRadius:14, padding:"14px", color:"#dc2626", fontSize:14, fontWeight:600, cursor:"pointer" }}>
+              Delete Reading
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return <div style={{ fontFamily:F }}>{fileInput}</div>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<PastureScan />);
+</script>
+</body>
+</html>
