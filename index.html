@@ -340,9 +340,12 @@ function PastureScan() {
   const seasonRef = useRef(season);
   const fileRef   = useRef(null);
 
-  // Persist history to localStorage whenever it changes
+  // Persist history to localStorage — strip images to avoid quota errors
   useEffect(() => {
-    localStorage.setItem("pasturescan_history", JSON.stringify(history));
+    try {
+      const slim = history.map(r => ({...r, image: null}));
+      localStorage.setItem("pasturescan_history", JSON.stringify(slim));
+    } catch(e) {}
   }, [history]);
 
   // Persist user to localStorage
