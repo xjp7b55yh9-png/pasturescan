@@ -344,12 +344,12 @@ function App(){
     else{const r=computeResult(combined,cur);if(frames.length>1){r.framesAnalysed=combined.frames;r.spatVar=combined.spatVar;r.hSt=combined.hSt;r.isVideo=true;}setResult(r);setActiveTab('metrics');go('result');}
   },[]);
 
-  const saveReading=useCallback(()=>{
+  const saveReading=useCallback((paddock,grazeType)=>{
     if(!result)return;
-    const r={id:Date.now(),paddock:paddockName.trim()||`Reading ${history.length+1}`,date:new Date().toLocaleDateString('en-NZ'),time:new Date().toLocaleTimeString('en-NZ',{hour:'2-digit',minute:'2-digit'}),image:null,result,season:season.label};
+    const r={id:Date.now(),paddock:(paddock||'').trim()||`Reading ${history.length+1}`,grazeType:grazeType||'post',date:new Date().toLocaleDateString('en-NZ'),time:new Date().toLocaleTimeString('en-NZ',{hour:'2-digit',minute:'2-digit'}),image:null,result,season:season.label};
     setHistory(p=>[r,...p.slice(0,49)]);
     setPaddockName('');setResult(null);setCapturedImg(null);go('home','back');
-  },[result,paddockName,season,history]);
+  },[result,season,history]);
 
   const fileRef2=useRef(null);
   const openFilePicker=()=>fileRef2.current&&fileRef2.current.click();
@@ -765,7 +765,35 @@ function CameraScreen({paddockName,setPaddockName,season,seasonRef,onCapture,onB
 }
 
 // ─── Result Screen ────────────────────────────────────────────────────────────
+function SaveModal({onConfirm,onCancel}){
+  const [paddock,setPaddock]=useState('');
+  const [graze,setGraze]=useState('post');
+  return h('div',{style:{position:'fixed',inset:0,zIndex:200,display:'flex',flexDirection:'column',justifyContent:'flex-end',background:'rgba(0,0,0,.55)',backdropFilter:'blur(4px)'}},
+    h('div',{style:{background:'#fff',borderRadius:'24px 24px 0 0',padding:'24px 20px 40px',animation:'slideUp .25s ease'}},
+      h('div',{style:{width:36,height:4,background:'#e2e8f0',borderRadius:2,margin:'0 auto 20px'}}),
+      h('div',{style:{fontSize:18,fontWeight:800,color:'#111',marginBottom:20}},'Save Reading'),
+      h('div',{style:{marginBottom:16}},
+        h('label',{style:{fontSize:12,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:.8,display:'block',marginBottom:8}},'Paddock Number / Name'),
+        h('input',{value:paddock,onChange:e=>setPaddock(e.target.value),placeholder:'e.g. Paddock 4, Home Block…',autoFocus:true,style:{width:'100%',fontSize:16,padding:'12px 14px',border:'1.5px solid #e2e8f0',borderRadius:12,boxSizing:'border-box',outline:'none'}})
+      ),
+      h('div',{style:{marginBottom:24}},
+        h('label',{style:{fontSize:12,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:.8,display:'block',marginBottom:8}},'Grazing Status'),
+        h('div',{style:{display:'flex',gap:10}},
+          ['pre','post'].map(g=>
+            h('button',{key:g,onClick:()=>setGraze(g),style:{flex:1,padding:'12px 0',borderRadius:12,fontSize:15,fontWeight:700,border:`2px solid ${graze===g?'#16a34a':'#e2e8f0'}`,background:graze===g?'#16a34a':'#f8fafc',color:graze===g?'#fff':'#64748b',transition:'all .15s'}},
+              g==='pre'?'Pre-grazing':'Post-grazing'
+            )
+          )
+        )
+      ),
+      h('button',{onClick:()=>onConfirm(paddock,graze),style:{width:'100%',background:'#16a34a',borderRadius:14,padding:16,color:'#fff',fontSize:17,fontWeight:800,marginBottom:10}},'💾 Save'),
+      h('button',{onClick:onCancel,style:{width:'100%',background:'transparent',borderRadius:14,padding:14,color:'#64748b',fontSize:15,fontWeight:600}},'Cancel')
+    )
+  );
+}
+
 function ResultScreen({result,capturedImg,paddockName,setPaddockName,season,activeTab,setActiveTab,onSave,onRetake,onBack,dir}){
+  const [showSaveModal,setShowSaveModal]=useState(false);
   const cat=getCat(result.kgDMperHa);
   const cowDays=Math.round(result.kgDMperHa/17);
   const displayNum=useCountUp(result.kgDMperHa);
@@ -869,10 +897,11 @@ function ResultScreen({result,capturedImg,paddockName,setPaddockName,season,acti
       ),
       // Save buttons
       h('div',{style:{padding:'16px 20px 0'}},
-        h('button',{onClick:onSave,style:{width:'100%',background:C.green,borderRadius:16,padding:18,color:'#fff',fontSize:17,fontWeight:800,boxShadow:`0 8px 24px ${C.green}44`,marginBottom:10,display:'flex',alignItems:'center',justifyContent:'center',gap:10,letterSpacing:'-.2px'}},h('span',null,'💾'),' Save Reading'),
+        h('button',{onClick:()=>setShowSaveModal(true),style:{width:'100%',background:C.green,borderRadius:16,padding:18,color:'#fff',fontSize:17,fontWeight:800,boxShadow:`0 8px 24px ${C.green}44`,marginBottom:10,display:'flex',alignItems:'center',justifyContent:'center',gap:10,letterSpacing:'-.2px'}},h('span',null,'💾'),' Save Reading'),
         h('button',{onClick:onRetake,style:{width:'100%',background:'transparent',border:`1.5px solid ${C.border}`,borderRadius:16,padding:15,color:C.textSec,fontSize:15,fontWeight:600}},'📷 Take Another')
       )
-    )
+    ),
+    showSaveModal&&h(SaveModal,{onConfirm:(paddock,graze)=>{setShowSaveModal(false);onSave(paddock,graze);},onCancel:()=>setShowSaveModal(false)})
   );
 }
 
