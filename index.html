@@ -593,68 +593,60 @@ function App(){
     const hh=viewing,cat=getCat(hh.result.kgDMperHa),r=hh.result;
     const ai=computeAI(r,hh.season);
     const saveName=()=>{if(!editName.trim())return;const up={...hh,paddock:editName.trim()};setHistory(p=>p.map(x=>x.id===hh.id?up:x));setViewing(up);setEditingName(false);};
-    return h('div',{className:`screen-${dir}`,style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto',overflowX:'hidden'}},
-      // Full-screen hero
-      h('div',{style:{position:'relative',height:'100vh',overflow:'hidden',background:`linear-gradient(160deg,${cat.color}cc,${cat.color}88)`}},
-        hh.image&&h('img',{src:hh.image,style:{width:'100%',height:'100%',objectFit:'cover',position:'absolute',inset:0}}),
-        h('div',{style:{position:'absolute',inset:0,background:'linear-gradient(to bottom,rgba(0,0,0,.4) 0%,rgba(0,0,0,.05) 40%,rgba(0,0,0,.55) 70%,rgba(0,0,0,.78) 100%)'}}),
-        // Back + paddock name
-        h('div',{style:{position:'absolute',top:54,left:16,right:16,display:'flex',alignItems:'center',gap:10}},
-          h('button',{onClick:()=>{setViewing(null);go('home','back');},style:{width:42,height:42,background:'rgba(0,0,0,.3)',backdropFilter:'blur(10px)',borderRadius:21,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},Ic.back(18,'#fff')),
-          editingName
-            ?h(Fragment,null,
-                h('input',{autoFocus:true,value:editName,onChange:e=>setEditName(e.target.value),onKeyDown:e=>e.key==='Enter'&&saveName(),style:{flex:1,background:'rgba(0,0,0,.35)',backdropFilter:'blur(10px)',borderRadius:22,padding:'10px 16px',color:'#fff',fontSize:15,fontWeight:600,fontFamily:'inherit'}}),
-                h('button',{onClick:saveName,style:{background:C.green,borderRadius:20,padding:'10px 16px',color:'#fff',fontSize:13,fontWeight:700,fontFamily:'inherit',flexShrink:0}},'Save'))
-            :h(Fragment,null,
-                h('div',{style:{flex:1,fontSize:16,fontWeight:700,color:'#fff',textShadow:'0 1px 6px rgba(0,0,0,.5)'}},hh.paddock),
-                h('button',{onClick:()=>{setEditName(hh.paddock);setEditingName(true);},style:{background:'rgba(0,0,0,.25)',backdropFilter:'blur(8px)',borderRadius:20,padding:'8px 12px',display:'flex',alignItems:'center',gap:6,flexShrink:0}},Ic.edit(14,'rgba(255,255,255,.8)')))
+    return h('div',{className:`screen-${dir}`,style:{position:'relative',width:'100%',height:'100vh',maxWidth:430,margin:'0 auto',overflow:'hidden',background:`linear-gradient(160deg,${cat.color}cc,${cat.color}88)`}},
+      // Full-screen grass background
+      hh.image&&h('img',{src:hh.image,style:{width:'100%',height:'100%',objectFit:'cover',position:'absolute',inset:0}}),
+      h('div',{style:{position:'absolute',inset:0,background:'linear-gradient(to bottom,rgba(0,0,0,.45) 0%,rgba(0,0,0,.05) 35%,rgba(0,0,0,.5) 55%,rgba(0,0,0,.82) 100%)'}}),
+      // Back button
+      h('button',{onClick:()=>{setViewing(null);go('home','back');},style:{position:'absolute',top:54,left:16,width:42,height:42,background:'rgba(0,0,0,.3)',backdropFilter:'blur(10px)',borderRadius:21,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',zIndex:2}},Ic.back(18,'#fff')),
+      // Paddock name — large
+      h('div',{style:{position:'absolute',top:54,left:70,right:16,display:'flex',alignItems:'center',gap:8,zIndex:2,minHeight:42}},
+        editingName
+          ?h(Fragment,null,
+              h('input',{autoFocus:true,value:editName,onChange:e=>setEditName(e.target.value),onKeyDown:e=>e.key==='Enter'&&saveName(),style:{flex:1,background:'rgba(0,0,0,.35)',backdropFilter:'blur(10px)',borderRadius:22,padding:'10px 16px',color:'#fff',fontSize:17,fontWeight:700,fontFamily:'inherit'}}),
+              h('button',{onClick:saveName,style:{background:C.green,borderRadius:20,padding:'10px 14px',color:'#fff',fontSize:13,fontWeight:700,fontFamily:'inherit',flexShrink:0}},'Save'))
+          :h(Fragment,null,
+              h('div',{style:{flex:1,fontSize:26,fontWeight:900,color:'#fff',letterSpacing:'-.5px',textShadow:'0 2px 10px rgba(0,0,0,.5)',lineHeight:1.1}},hh.paddock),
+              h('button',{onClick:()=>{setEditName(hh.paddock);setEditingName(true);},style:{background:'rgba(0,0,0,.25)',backdropFilter:'blur(8px)',borderRadius:18,padding:'7px 10px',display:'flex',alignItems:'center',flexShrink:0}},Ic.edit(14,'rgba(255,255,255,.75)')))
+      ),
+      // Cover number — below paddock
+      h('div',{style:{position:'absolute',top:118,left:22,right:22,zIndex:2}},
+        h('div',{style:{fontSize:10,color:'rgba(255,255,255,.6)',fontWeight:700,textTransform:'uppercase',letterSpacing:1.2,marginBottom:4}},'Pasture Cover'),
+        h('div',{style:{display:'flex',alignItems:'baseline',gap:8,marginBottom:10}},
+          h('div',{style:{fontSize:58,fontWeight:900,color:'#fff',letterSpacing:'-2px',lineHeight:1}},r.kgDMperHa.toLocaleString()),
+          h('div',{style:{fontSize:16,color:'rgba(255,255,255,.7)',fontWeight:700}},'kg DM/ha')
         ),
-        // Cover number
-        h('div',{style:{position:'absolute',top:'30%',left:22,right:22}},
-          h('div',{style:{fontSize:11,color:'rgba(255,255,255,.7)',fontWeight:700,textTransform:'uppercase',letterSpacing:1.2,marginBottom:6}},'Pasture Cover'),
-          h('div',{style:{display:'flex',alignItems:'baseline',gap:10,marginBottom:16}},
-            h('div',{style:{fontSize:72,fontWeight:900,color:'#fff',letterSpacing:'-3px',lineHeight:1}},r.kgDMperHa.toLocaleString()),
-            h('div',{style:{fontSize:18,color:'rgba(255,255,255,.75)',fontWeight:700}},'kg DM/ha')
-          ),
-          h('div',{style:{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}},
-            h('div',{style:{background:'rgba(0,0,0,.3)',backdropFilter:'blur(6px)',borderRadius:20,padding:'6px 16px'}},h('div',{style:{fontSize:13,color:'#fff',fontWeight:700}},cat.label)),
-            h('div',{style:{background:'rgba(0,0,0,.2)',backdropFilter:'blur(6px)',borderRadius:20,padding:'6px 14px'}},h('div',{style:{fontSize:12,color:'rgba(255,255,255,.9)',fontWeight:600}},hh.date)),
-            hh.grazeType&&h('div',{style:{background:'rgba(0,0,0,.2)',backdropFilter:'blur(6px)',borderRadius:20,padding:'6px 12px'}},h('div',{style:{fontSize:12,color:'rgba(255,255,255,.9)',fontWeight:600}},hh.grazeType==='pre'?'Pre-grazing':'Post-grazing'))
-          )
-        ),
-        // Scroll hint
-        h('div',{style:{position:'absolute',bottom:24,left:0,right:0,display:'flex',flexDirection:'column',alignItems:'center',gap:6}},
-          h('div',{style:{fontSize:10,color:'rgba(255,255,255,.4)',fontWeight:700,letterSpacing:1,textTransform:'uppercase'}},'Scroll for analysis'),
-          h('div',{style:{width:1.5,height:20,background:'rgba(255,255,255,.2)'}})
+        h('div',{style:{display:'flex',gap:8,flexWrap:'wrap'}},
+          h('div',{style:{background:'rgba(0,0,0,.3)',backdropFilter:'blur(6px)',borderRadius:20,padding:'5px 14px'}},h('div',{style:{fontSize:12,color:'#fff',fontWeight:700}},cat.label)),
+          h('div',{style:{background:'rgba(0,0,0,.2)',backdropFilter:'blur(6px)',borderRadius:20,padding:'5px 12px'}},h('div',{style:{fontSize:12,color:'rgba(255,255,255,.9)',fontWeight:600}},hh.date)),
+          hh.grazeType&&h('div',{style:{background:'rgba(0,0,0,.2)',backdropFilter:'blur(6px)',borderRadius:20,padding:'5px 12px'}},h('div',{style:{fontSize:12,color:'rgba(255,255,255,.9)',fontWeight:600}},hh.grazeType==='pre'?'Pre-grazing':'Post-grazing'))
         )
       ),
-      // Analysis content
-      h('div',{style:{background:C.card,padding:'24px 20px 50px'}},
-        // AI Analysis
-        h('div',{style:{background:'linear-gradient(135deg,#1C3829,#2E5C3E)',borderRadius:20,padding:20,marginBottom:16}},
-          h('div',{style:{fontSize:10,color:'rgba(255,255,255,.5)',fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:14,display:'flex',alignItems:'center',gap:6}},
-            Ic.info(12,'rgba(255,255,255,.5)'),'AI Analysis · DairyNZ Research'),
-          h('div',{style:{display:'flex',gap:12,marginBottom:14}},
-            h('div',{style:{flex:1,background:'rgba(255,255,255,.1)',borderRadius:14,padding:16,textAlign:'center'}},
-              h('div',{style:{fontSize:10,color:'rgba(255,255,255,.5)',fontWeight:700,textTransform:'uppercase',letterSpacing:.8,marginBottom:6}},'Est. DM%'),
-              h('div',{style:{fontSize:34,fontWeight:900,color:'#fff',letterSpacing:'-1px'}},ai.dm+'%'),
-              h('div',{style:{fontSize:11,color:'rgba(255,255,255,.4)',marginTop:4}},hh.season)
-            ),
-            h('div',{style:{flex:1,background:'rgba(255,255,255,.1)',borderRadius:14,padding:16,textAlign:'center'}},
-              h('div',{style:{fontSize:10,color:'rgba(255,255,255,.5)',fontWeight:700,textTransform:'uppercase',letterSpacing:.8,marginBottom:6}},'Est. ME'),
-              h('div',{style:{fontSize:34,fontWeight:900,color:'#fff',letterSpacing:'-1px'}},ai.me),
-              h('div',{style:{fontSize:11,color:'rgba(255,255,255,.4)',marginTop:4}},'MJ ME/kg DM')
-            )
+      // Bottom panel — all analysis on one screen
+      h('div',{style:{position:'absolute',bottom:0,left:0,right:0,background:'rgba(18,36,26,.9)',backdropFilter:'blur(24px)',borderRadius:'22px 22px 0 0',padding:'16px 18px 40px',zIndex:2}},
+        // AI Analysis header
+        h('div',{style:{fontSize:10,color:'rgba(255,255,255,.45)',fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:10,display:'flex',alignItems:'center',gap:6}},
+          Ic.info(11,'rgba(255,255,255,.45)'),'AI Analysis · DairyNZ Research'),
+        // DM% and ME cards
+        h('div',{style:{display:'flex',gap:10,marginBottom:10}},
+          h('div',{style:{flex:1,background:'rgba(255,255,255,.08)',borderRadius:14,padding:'12px 14px',textAlign:'center'}},
+            h('div',{style:{fontSize:10,color:'rgba(255,255,255,.4)',fontWeight:700,textTransform:'uppercase',letterSpacing:.8,marginBottom:4}},'Est. DM%'),
+            h('div',{style:{fontSize:30,fontWeight:900,color:'#fff',letterSpacing:'-1px'}},ai.dm+'%'),
+            h('div',{style:{fontSize:11,color:'rgba(255,255,255,.3)',marginTop:2}},hh.season)
           ),
-          h('div',{style:{fontSize:13,color:'rgba(255,255,255,.6)',lineHeight:1.65}},ai.meText)
+          h('div',{style:{flex:1,background:'rgba(255,255,255,.08)',borderRadius:14,padding:'12px 14px',textAlign:'center'}},
+            h('div',{style:{fontSize:10,color:'rgba(255,255,255,.4)',fontWeight:700,textTransform:'uppercase',letterSpacing:.8,marginBottom:4}},'Est. ME'),
+            h('div',{style:{fontSize:30,fontWeight:900,color:'#fff',letterSpacing:'-1px'}},ai.me),
+            h('div',{style:{fontSize:11,color:'rgba(255,255,255,.3)',marginTop:2}},'MJ ME/kg DM')
+          )
         ),
-        // DairyNZ recommendation
-        h('div',{style:{background:C.greenLt,border:`1.5px solid ${C.greenMid}`,borderRadius:18,padding:18,marginBottom:16}},
-          h('div',{style:{fontSize:11,color:C.green,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:8}},'DairyNZ Recommendation'),
-          h('div',{style:{fontSize:14,color:C.greenDk,fontWeight:600,lineHeight:1.6}},r.rec)
-        ),
+        h('div',{style:{fontSize:12,color:'rgba(255,255,255,.5)',lineHeight:1.55,marginBottom:12}},ai.meText),
+        h('div',{style:{height:1,background:'rgba(255,255,255,.08)',marginBottom:12}}),
+        // DairyNZ rec
+        h('div',{style:{fontSize:10,color:C.green,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:6}},'DairyNZ Recommendation'),
+        h('div',{style:{fontSize:13,color:'rgba(255,255,255,.75)',fontWeight:600,lineHeight:1.5,marginBottom:14}},r.rec),
         // Delete
-        h('button',{onClick:()=>{setHistory(p=>p.filter(x=>x.id!==hh.id));setViewing(null);go('home','back');},style:{width:'100%',background:'transparent',border:'1.5px solid #FECACA',borderRadius:14,padding:14,color:C.red,fontSize:14,fontWeight:600,fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:8}},Ic.trash(16,C.red),'Delete Reading')
+        h('button',{onClick:()=>{setHistory(p=>p.filter(x=>x.id!==hh.id));setViewing(null);go('home','back');},style:{width:'100%',background:'rgba(255,255,255,.06)',border:'1.5px solid rgba(239,68,68,.4)',borderRadius:12,padding:11,color:'#FCA5A5',fontSize:13,fontWeight:600,fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:8}},Ic.trash(14,'#FCA5A5'),'Delete Reading')
       )
     );
   }
