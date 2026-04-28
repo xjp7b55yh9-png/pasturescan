@@ -508,7 +508,7 @@ function App(){
       paddockName,setPaddockName,season,seasonRef,
       onCapture:(frames,preview)=>{setCapturedImg(preview);runAnalysis(frames,preview);},
       onBack:()=>go('home','back'),
-      onFallback:openFilePicker,
+      onFileSelected:handleFile,
     });
   }
 
@@ -708,9 +708,10 @@ function App(){
 }
 
 // ─── Camera Screen ────────────────────────────────────────────────────────────
-function CameraScreen({paddockName,setPaddockName,season,seasonRef,onCapture,onBack,onFallback}){
+function CameraScreen({paddockName,setPaddockName,season,seasonRef,onCapture,onBack,onFileSelected}){
   const videoRef=useRef(null);
   const streamRef=useRef(null);
+  const fileInputRef=useRef(null);
   const[ready,setReady]=useState(false);
   const[error,setError]=useState(null);
   const[isRecording,setIsRecording]=useState(false);
@@ -773,13 +774,15 @@ function CameraScreen({paddockName,setPaddockName,season,seasonRef,onCapture,onB
   const dashOffset=CIRCUMFERENCE*(1-progress);
 
   if(error)return h('div',{style:{background:'#000',minHeight:'100vh',maxWidth:430,margin:'0 auto',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:32,gap:20}},
+    h('input',{ref:fileInputRef,type:'file',accept:'video/*,image/*',style:{display:'none'},onChange:onFileSelected}),
     h('div',{style:{color:'rgba(255,255,255,.4)'}},Ic.camera(56,'rgba(255,255,255,.4)')),
     h('div',{style:{fontSize:15,color:'rgba(255,255,255,.8)',textAlign:'center',lineHeight:1.7,fontWeight:500}},error),
-    h('button',{onClick:onFallback,style:{background:C.green,borderRadius:14,padding:'14px 28px',color:'#fff',fontSize:15,fontWeight:700,fontFamily:'inherit',marginTop:8,display:'flex',alignItems:'center',gap:8}},Ic.upload(18,'#fff'),'Upload from Photos'),
+    h('button',{onClick:()=>fileInputRef.current?.click(),style:{background:C.green,borderRadius:14,padding:'14px 28px',color:'#fff',fontSize:15,fontWeight:700,fontFamily:'inherit',marginTop:8,display:'flex',alignItems:'center',gap:8}},Ic.upload(18,'#fff'),'Upload from Photos'),
     h('button',{onClick:onBack,style:{background:'transparent',borderRadius:14,padding:'12px 28px',color:'rgba(255,255,255,.4)',fontSize:14,fontWeight:500,fontFamily:'inherit'}},'Go Back')
   );
 
   return h('div',{style:{background:'#000',minHeight:'100vh',maxWidth:430,margin:'0 auto',position:'relative',overflow:'hidden'}},
+    h('input',{ref:fileInputRef,type:'file',accept:'video/*,image/*',style:{display:'none'},onChange:onFileSelected}),
     h('video',{ref:videoRef,muted:true,playsInline:true,autoPlay:true,style:{width:'100%',height:'100%',objectFit:'cover',position:'absolute',inset:0}}),
     h('div',{style:{position:'absolute',top:0,left:0,right:0,height:150,background:'linear-gradient(to bottom,rgba(0,0,0,.65),transparent)',pointerEvents:'none'}}),
     h('div',{style:{position:'absolute',bottom:0,left:0,right:0,height:220,background:'linear-gradient(to top,rgba(0,0,0,.8),transparent)',pointerEvents:'none'}}),
@@ -803,7 +806,7 @@ function CameraScreen({paddockName,setPaddockName,season,seasonRef,onCapture,onB
     h('div',{style:{position:'absolute',bottom:0,left:0,right:0,padding:'0 0 52px',display:'flex',flexDirection:'column',alignItems:'center',gap:16}},
       h('div',{className:'capture-hint'},isRecording?'Release to analyse':'Tap for photo · Hold for video sweep'),
       h('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',gap:44,width:'100%'}},
-        h('button',{onClick:onFallback,style:{width:48,height:48,background:'rgba(255,255,255,.12)',backdropFilter:'blur(8px)',borderRadius:24,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center'}},Ic.upload(20,'#fff')),
+        h('button',{onClick:()=>fileInputRef.current?.click(),style:{width:48,height:48,background:'rgba(255,255,255,.12)',backdropFilter:'blur(8px)',borderRadius:24,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center'}},Ic.upload(20,'#fff')),
         h('div',{className:'capture-wrap',
           onPointerDown:onPressStart,onPointerUp:onPressEnd,onPointerLeave:e=>{if(isRecording||holdTimer.current)onPressEnd(e);},
           style:{touchAction:'none',userSelect:'none'}},
