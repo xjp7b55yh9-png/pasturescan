@@ -891,29 +891,10 @@ function ResultScreen({result,capturedImg,paddockName,setPaddockName,season,acti
       h('div',{style:{padding:'20px 20px 0'}},
         // Gauge
         h(DmGauge,{value:result.kgDMperHa}),
-        // Key stats row
-        h('div',{style:{display:'flex',gap:8,marginBottom:16}},
-          [{lbl:'Height',val:result.hCm+' cm'},{lbl:'Growth',val:result.gr+' kg/ha/d'},{lbl:'Cow-days',val:cowDays+' days'}].map((m,i)=>
-            h('div',{key:i,style:{flex:1,background:'#F8FAF8',borderRadius:12,padding:'10px 12px'}},
-              h('div',{style:{fontSize:10,color:C.textTert,fontWeight:700,textTransform:'uppercase',letterSpacing:.7,marginBottom:4}},m.lbl),
-              h('div',{style:{fontSize:14,fontWeight:800,color:C.text}},m.val)
-            )
-          )
-        ),
         // DairyNZ recommendation
         h('div',{style:{background:C.greenLt,border:`1.5px solid ${C.greenMid}`,borderRadius:18,padding:18,marginBottom:12}},
           h('div',{style:{fontSize:11,color:C.green,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:8}},'DairyNZ Recommendation'),
           h('div',{style:{fontSize:15,color:C.greenDk,fontWeight:600,lineHeight:1.65}},result.rec)
-        ),
-        // Calculation details
-        h('div',{style:{background:'#F8FAF8',borderRadius:18,padding:18,marginBottom:12}},
-          h('div',{style:{fontSize:11,fontWeight:700,color:C.textSec,textTransform:'uppercase',letterSpacing:1,marginBottom:12}},'Details'),
-          [['Season',season.label],['Sward',result.sw.charAt(0).toUpperCase()+result.sw.slice(1)],['Leaf stage',result.leaf],['Quality',result.qual],['Residual target','1,500–1,650 kg DM/ha'],['Pre-graze target','2,800–3,200 kg DM/ha']].map(([k,v],i,a)=>
-            h('div',{key:i,style:{display:'flex',justifyContent:'space-between',paddingBottom:i<a.length-1?10:0,marginBottom:i<a.length-1?10:0,borderBottom:i<a.length-1?`1px solid ${C.border}`:'none'}},
-              h('span',{style:{fontSize:14,color:C.textSec}},k),
-              h('span',{style:{fontSize:14,fontWeight:600,color:C.text}},v)
-            )
-          )
         ),
         result.isVideo&&h('div',{style:{background:'#EEF2FF',border:'1px solid #C7D2FE',borderRadius:16,padding:16,marginBottom:12}},
           h('div',{style:{fontSize:11,fontWeight:700,color:'#4338CA',textTransform:'uppercase',letterSpacing:1,marginBottom:8,display:'flex',alignItems:'center',gap:6}},Ic.film(14,'#4338CA'),'Sweep Analysis'),
