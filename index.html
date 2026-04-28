@@ -617,7 +617,7 @@ function App(){
   // ─── HOME ─────────────────────────────────────────────────────────────────
   const avg=history.length?Math.round(history.reduce((s,hh)=>s+hh.result.kgDMperHa,0)/history.length):null;
   return h('div',{style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto',paddingBottom:100}},
-    h('input',{ref:fileRef2,type:'file',accept:'video/*,image/*',capture:'environment',style:{display:'none'},onChange:handleFile}),
+    h('input',{ref:fileRef2,type:'file',accept:'video/*,image/*',style:{display:'none'},onChange:handleFile}),
 
     // ── Header ──
     h('div',{style:{background:`linear-gradient(155deg,${C.greenDk} 0%,${C.green} 100%)`,padding:'56px 24px 28px',position:'relative',overflow:'hidden'}},
