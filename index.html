@@ -317,8 +317,6 @@ function App(){
   const[importRes,setImportRes]=useState(null);
   const[navTab,setNavTab]=useState('home');
   const seasonRef=useRef(season);
-  const fileRef=useRef(null);
-  const fileRef2=useRef(null);
 
   useEffect(()=>{try{localStorage.setItem('ps_h',JSON.stringify(history.map(r=>({...r,image:null}))));}catch{};},[history]);
   useEffect(()=>{if(user)localStorage.setItem('ps_u',JSON.stringify(user));else localStorage.removeItem('ps_u');},[user]);
@@ -398,7 +396,15 @@ function App(){
     setPaddockName('');setResult(null);setCapturedImg(null);go('home','back');
   },[result,season,history]);
 
-  const openFilePicker=()=>fileRef2.current&&fileRef2.current.click();
+  const openFilePicker=()=>{
+    const input=document.createElement('input');
+    input.type='file';input.accept='video/*,image/*';
+    input.style.cssText='position:fixed;top:-200px;left:0;opacity:0;pointer-events:none;';
+    document.body.appendChild(input);
+    input.onchange=handleFile;
+    input.click();
+    setTimeout(()=>{try{document.body.removeChild(input);}catch{}},8000);
+  };
   const handleFile=useCallback(e=>{
     const f=e.target.files&&e.target.files[0];if(!f)return;e.target.value='';
     const isVid=f.type.startsWith('video/');
@@ -617,7 +623,6 @@ function App(){
   // ─── HOME ─────────────────────────────────────────────────────────────────
   const avg=history.length?Math.round(history.reduce((s,hh)=>s+hh.result.kgDMperHa,0)/history.length):null;
   return h('div',{style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto',paddingBottom:100}},
-    h('input',{ref:fileRef2,type:'file',accept:'video/*,image/*',style:{display:'none'},onChange:handleFile}),
 
     // ── Header ──
     h('div',{style:{background:`linear-gradient(155deg,${C.greenDk} 0%,${C.green} 100%)`,padding:'56px 24px 28px',position:'relative',overflow:'hidden'}},
