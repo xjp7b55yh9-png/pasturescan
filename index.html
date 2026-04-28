@@ -1,753 +1,888 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <title>PastureScan</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-    body { background: #f2f2f7; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif; }
-    #root { min-height: 100vh; }
+    *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    body{background:#f1f5f1;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;overscroll-behavior:none;-webkit-font-smoothing:antialiased}
+    #root{min-height:100vh}
+    button{font-family:inherit;cursor:pointer;border:none}
+    input{font-family:inherit;border:none;outline:none}
+
+    /* Screen transitions */
+    .screen-fwd{animation:slideFwd 300ms cubic-bezier(0.32,0.72,0,1) forwards}
+    .screen-back{animation:slideBack 300ms cubic-bezier(0.32,0.72,0,1) forwards}
+    .screen-up{animation:slideUp 340ms cubic-bezier(0.32,0.72,0,1) forwards}
+    @keyframes slideFwd{from{transform:translateX(100%)}to{transform:translateX(0)}}
+    @keyframes slideBack{from{transform:translateX(-30%)}to{transform:translateX(0)}}
+    @keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+
+    /* Camera */
+    #cam-video{width:100%;height:100%;object-fit:cover;display:block}
+    .cam-overlay{position:absolute;inset:0;pointer-events:none}
+    .capture-wrap{position:relative;width:88px;height:88px;flex-shrink:0}
+    .capture-svg{position:absolute;top:0;left:0;transform:rotate(-90deg)}
+    .capture-circle{
+      width:72px;height:72px;border-radius:50%;
+      background:#fff;border:4px solid rgba(255,255,255,0.5);
+      position:absolute;top:8px;left:8px;
+      transition:transform .15s ease,background .15s ease
+    }
+    .capture-circle.rec{background:#ef4444;transform:scale(0.82)}
+    .capture-hint{font-size:11px;color:rgba(255,255,255,0.7);text-align:center;margin-top:8px;font-weight:500;letter-spacing:.3px}
+
+    /* Swipe to delete */
+    .swipe-row{position:relative;overflow:hidden}
+    .swipe-del{position:absolute;right:0;top:0;bottom:0;width:80px;background:#ef4444;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:2px;font-size:11px;font-weight:700;color:#fff}
+    .swipe-content{background:#fff;will-change:transform}
+
+    /* Count-up */
+    @keyframes popIn{from{opacity:0;transform:scale(.7) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
+    .pop-in{animation:popIn .5s cubic-bezier(0.34,1.56,0.64,1) forwards}
+
+    /* Pulse ring on camera open */
+    @keyframes pulseRing{0%{transform:scale(1);opacity:.6}70%{transform:scale(1.35);opacity:0}100%{opacity:0}}
+    .pulse-ring{position:absolute;inset:-6px;border-radius:50%;border:3px solid #fff;animation:pulseRing 1.4s ease-out infinite}
+
+    /* Scan line */
+    @keyframes scanDrop{0%{top:8%}100%{top:88%}}
+    .scan-line{position:absolute;left:10%;right:10%;height:2px;background:linear-gradient(90deg,transparent,rgba(34,197,94,.8),transparent);animation:scanDrop 2s ease-in-out infinite alternate}
+
+    /* Result bar */
+    @keyframes barGrow{from{width:0}to{width:var(--w)}}
+    .dm-bar{animation:barGrow .8s .3s cubic-bezier(0.16,1,.3,1) both}
+
+    /* Sunlight mode */
+    body.sun{background:#fff}
+    body.sun .card-bg{background:#f8f8f8 !important}
+    body.sun .main-text{color:#000 !important;font-size:105%}
+
+    /* Haptic pulse on save */
+    @keyframes savePulse{0%{transform:scale(1)}50%{transform:scale(.97)}100%{transform:scale(1)}}
+    .save-pulse{animation:savePulse .25s ease}
   </style>
 </head>
 <body>
-<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#1a5c3a;font-size:18px;font-family:-apple-system,sans-serif;">Loading PastureScan…</div></div>
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#16a34a;font-size:17px">Loading…</div></div>
 <script type="module">
-import { createElement as h, useState, useRef, useCallback, useEffect, Fragment } from 'https://esm.sh/react@18';
-import { createRoot } from 'https://esm.sh/react-dom@18/client';
+import{createElement as h,useState,useRef,useCallback,useEffect,Fragment}from'https://esm.sh/react@18';
+import{createRoot}from'https://esm.sh/react-dom@18/client';
 
-// ── Storage shim ──────────────────────────────────────────────────────────────
-window._storage = {
-  get: k => { const v = localStorage.getItem(k); return v ? { value: v } : null; },
-  set: (k, v) => localStorage.setItem(k, v),
+// ─── Storage ────────────────────────────────────────────────────────────────
+const store={
+  get:k=>{const v=localStorage.getItem(k);return v?{value:v}:null},
+  set:(k,v)=>localStorage.setItem(k,v),
 };
 
-// ── Seasons ───────────────────────────────────────────────────────────────────
-const SEASONS = [
-  { label:'Spring', months:[8,9,10] },
-  { label:'Summer', months:[11,0,1] },
-  { label:'Autumn', months:[2,3,4]  },
-  { label:'Winter', months:[5,6,7]  },
-];
-function getCurrentSeason() {
-  const m = new Date().getMonth();
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-  const isSouthern = /Auckland|Wellington|Sydney|Melbourne|Brisbane|Adelaide|Hobart|Perth/.test(tz)
-    || new Date().getTimezoneOffset() <= -480;
-  const month = isSouthern ? m : (m + 6) % 12;
-  return SEASONS.find(s => s.months.includes(month)) || SEASONS[0];
-}
+// ─── Design tokens ───────────────────────────────────────────────────────────
+const C={
+  bg:'#f1f5f1',card:'#fff',
+  green:'#16a34a',greenDk:'#14532d',greenLt:'#dcfce7',greenMid:'#bbf7d0',
+  text:'#0f172a',textSec:'#475569',textTert:'#94a3b8',
+  border:'#e2e8f0',
+  red:'#ef4444',redLt:'#fef2f2',
+  amber:'#f59e0b',blue:'#3b82f6',
+  shadow:'0 1px 4px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.05)',
+  shadowMd:'0 4px 16px rgba(0,0,0,.10)',
+};
 
-// ── DairyNZ targets ───────────────────────────────────────────────────────────
-const DM_RANGES = [
-  { label:'Below residual',    min:300,  max:1500, color:'#ef4444', emoji:'🔴', target:'DairyNZ residual target: 1,500–1,650 kg DM/ha (3.5–4 cm, 7–8 clicks)' },
-  { label:'Building — resting',min:1500, max:2200, color:'#f97316', emoji:'🟠', target:'Below 2,000–2,400 APC target — continue resting' },
-  { label:'Pre-grazing ready', min:2200, max:3200, color:'#22c55e', emoji:'🟢', target:'Ideal 2,800–3,200 kg DM/ha for 16–18 kg DM/cow/day' },
-  { label:'Surplus',           min:3200, max:5000, color:'#eab308', emoji:'🟡', target:'>3,500 = clover shading, tiller loss, ensile or top-priority graze' },
+// ─── Seasons ─────────────────────────────────────────────────────────────────
+const SEASONS=[
+  {label:'Spring',months:[8,9,10]},
+  {label:'Summer',months:[11,0,1]},
+  {label:'Autumn',months:[2,3,4]},
+  {label:'Winter',months:[5,6,7]},
 ];
-const getDMCat = dm => DM_RANGES.find(r => dm >= r.min && dm < r.max) || DM_RANGES[3];
+const getSeason=()=>{
+  const m=new Date().getMonth();
+  const tz=Intl.DateTimeFormat().resolvedOptions().timeZone||'';
+  const south=/Auckland|Wellington|Sydney|Melbourne|Brisbane|Adelaide|Hobart|Perth/.test(tz)||new Date().getTimezoneOffset()<=-480;
+  const mo=south?m:(m+6)%12;
+  return SEASONS.find(s=>s.months.includes(mo))||SEASONS[0];
+};
 
-// ── Pixel analysis ────────────────────────────────────────────────────────────
-function analysePixels(dataUrl) {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => {
-      const SIZE = 240;
-      const c = document.createElement('canvas');
-      c.width = SIZE; c.height = SIZE;
-      const ctx = c.getContext('2d');
-      ctx.drawImage(img, 0, 0, SIZE, SIZE);
-      const px = ctx.getImageData(0, 0, SIZE, SIZE).data;
-      const n = SIZE * SIZE;
-      let rSum=0,gSum=0,bSum=0,exGSum=0,gccSum=0,ngrdiSum=0;
-      let deepGreen=0,richGreen=0,midGreen=0,lightGreen=0,paleGreen=0,yellowGreen=0,brown=0,shadow=0,grey=0,white=0;
-      let greenLumSum=0,greenCount=0,greenLumSqSum=0;
-      for (let i=0;i<px.length;i+=4) {
-        const r=px[i],g=px[i+1],b=px[i+2];
-        const lum=0.299*r+0.587*g+0.114*b,sat=Math.max(r,g,b)-Math.min(r,g,b),sum3=r+g+b+0.001;
-        rSum+=r;gSum+=g;bSum+=b;
-        const exG=2*g-r-b,gcc=g/sum3,ngrdi=(g-r)/(g+r+0.001);
-        exGSum+=exG;gccSum+=gcc;ngrdiSum+=ngrdi;
-        const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;
-        let hue=0;
-        if(d>0){if(mx===r)hue=((g-b)/d)%6;else if(mx===g)hue=(b-r)/d+2;else hue=(r-g)/d+4;hue*=60;if(hue<0)hue+=360;}
-        if(lum>238){white++;continue;}
-        if(sat<16&&lum>50&&lum<215){grey++;continue;}
-        if(lum<32){shadow++;continue;}
-        const isGH=hue>=55&&hue<=170,isGD=g>r&&g>b&&exG>5;
-        if(isGH||isGD){
-          greenLumSum+=lum;greenLumSqSum+=lum*lum;greenCount++;
-          if(lum<110&&exG>35&&hue>=80&&hue<=150&&sat>30){deepGreen++;continue;}
-          if(lum>=90&&lum<150&&exG>25&&hue>=75&&hue<=155&&sat>22){richGreen++;continue;}
-          if(lum>=125&&lum<185&&exG>12&&hue>=70&&hue<=160&&sat>14){midGreen++;continue;}
-          if(lum>=165&&lum<225&&hue>=65&&hue<=160&&sat>10){lightGreen++;continue;}
-          if(lum>=200&&exG>3&&sat>6){paleGreen++;continue;}
-          if(hue>=40&&hue<75&&lum>100&&sat>15){yellowGreen++;continue;}
-        }
-        if(hue>=15&&hue<50&&r>g&&r>b&&lum>38&&lum<195&&sat>8){brown++;continue;}
+// ─── DM ranges ───────────────────────────────────────────────────────────────
+const DM=[
+  {label:'Below residual',sub:'Overgrazed',min:300, max:1500,color:'#ef4444',emoji:'🔴',tip:'Rest immediately — tiller damage risk'},
+  {label:'Building',      sub:'Resting',  min:1500,max:2200,color:'#f97316',emoji:'🟠',tip:'Continue resting — not ready to graze'},
+  {label:'Pre-grazing',   sub:'Ideal',    min:2200,max:3200,color:'#16a34a',emoji:'🟢',tip:'2,800–3,200 kg DM/ha — 16–18 kg DM/cow/day'},
+  {label:'Surplus',       sub:'Act now',  min:3200,max:5500,color:'#eab308',emoji:'🟡',tip:'Quality declining — ensile or graze immediately'},
+];
+const getCat=dm=>DM.find(r=>dm>=r.min&&dm<r.max)||DM[3];
+
+// ─── Pixel analysis ──────────────────────────────────────────────────────────
+function analysePixels(dataUrl){return new Promise(resolve=>{
+  const img=new Image();
+  img.onload=()=>{
+    const S=240,c=document.createElement('canvas');c.width=S;c.height=S;
+    const ctx=c.getContext('2d');ctx.drawImage(img,0,0,S,S);
+    const px=ctx.getImageData(0,0,S,S).data,n=S*S;
+    let rS=0,gS=0,bS=0,exS=0,gcS=0,ngS=0;
+    let dG=0,rG=0,mG=0,lG=0,pG=0,yG=0,br=0,sh=0,gr=0,wh=0;
+    let glS=0,gc2=0,gn=0;
+    for(let i=0;i<px.length;i+=4){
+      const r=px[i],g=px[i+1],b=px[i+2];
+      const lum=.299*r+.587*g+.114*b,sat=Math.max(r,g,b)-Math.min(r,g,b),s3=r+g+b+.001;
+      rS+=r;gS+=g;bS+=b;
+      const exG=2*g-r-b,gcc=g/s3,ng=(g-r)/(g+r+.001);
+      exS+=exG;gcS+=gcc;ngS+=ng;
+      const mx=Math.max(r,g,b),d=mx-Math.min(r,g,b);
+      let hue=0;if(d>0){if(mx===r)hue=((g-b)/d)%6;else if(mx===g)hue=(b-r)/d+2;else hue=(r-g)/d+4;hue*=60;if(hue<0)hue+=360;}
+      if(lum>238){wh++;continue;}
+      if(sat<16&&lum>50&&lum<215){gr++;continue;}
+      if(lum<32){sh++;continue;}
+      const isGH=hue>=55&&hue<=170,isGD=g>r&&g>b&&exG>5;
+      if(isGH||isGD){
+        glS+=lum;gc2+=lum*lum;gn++;
+        if(lum<110&&exG>35&&hue>=80&&hue<=150&&sat>30){dG++;continue;}
+        if(lum>=90&&lum<150&&exG>25&&hue>=75&&hue<=155&&sat>22){rG++;continue;}
+        if(lum>=125&&lum<185&&exG>12&&hue>=70&&hue<=160&&sat>14){mG++;continue;}
+        if(lum>=165&&lum<225&&hue>=65&&hue<=160&&sat>10){lG++;continue;}
+        if(lum>=200&&exG>3&&sat>6){pG++;continue;}
+        if(hue>=40&&hue<75&&lum>100&&sat>15){yG++;continue;}
       }
-      const dP=deepGreen/n,rP=richGreen/n,mP=midGreen/n,lP=lightGreen/n;
-      const pP=paleGreen/n,yP=yellowGreen/n,bP=brown/n,dkP=shadow/n,grP=grey/n,whP=white/n;
-      const grassTotal=dP+rP+mP+lP+pP+yP;
-      const avgG=gSum/n,avgR=rSum/n,avgB=bSum/n;
-      const avgExG=exGSum/n,avgGCC=gccSum/n,avgNGRDI=ngrdiSum/n;
-      const pD=grassTotal>=0.12&&(avgExG>6||avgGCC>0.36);
-      const dkD=dkP>0.15&&avgG>avgR&&avgG>avgB*0.95;
-      const wD=avgG-avgR>3&&avgGCC>0.33&&grP+whP<0.30;
-      if(!pD&&!dkD&&!wD){resolve({grassDetected:false,grassPct:Math.round(grassTotal*100)});return;}
-      const gMean=greenCount?greenLumSum/greenCount:0;
-      const gVar=greenCount?(greenLumSqSum/greenCount)-gMean*gMean:0;
-      const gStd=Math.sqrt(Math.max(0,gVar));
-      const uniformity=Math.max(0,1-gStd/60);
-      const isLawn=mP>0.28&&dP<0.08&&dkP<0.06&&bP<0.08&&uniformity>0.45&&avgGCC>0.36;
-      const isFescue=!isLawn&&dP>0.15&&dkP>0.08&&rP>0.15&&lP<0.12;
-      const isKikuyu=!isLawn&&lP>0.25&&dP<0.10&&mP>0.20&&yP<0.15;
-      const swardType=isLawn?'lawn':isFescue?'fescue':isKikuyu?'kikuyu':'ryegrass';
-      let vh;
-      if(isLawn) vh=2+mP*5+lP*6+yP*4+pP*3;
-      else if(isKikuyu) vh=3+dP*20+rP*14+mP*9+lP*6+yP*5+dkP*9;
-      else{const sg=0.5+Math.min(1,dkP/0.10)*0.5;vh=(dP*28+rP*17)*sg+mP*11+lP*5+pP*3+yP*7+dkP*13+bP*1+Math.max(0,avgG-avgR)/5;}
-      const heightCm=Math.max(2,Math.min(40,Math.round(vh)));
-      const cR=isLawn?1.5:isFescue?3.0:isKikuyu?3.2:2.7;
-      const compressedCm=Math.max(0.3,heightCm/cR);
-      const cloverPresent=!isLawn&&lP>0.08&&yP<0.22&&rP>0.08;
-      const postGrazing=heightCm<=8||(bP>0.18&&heightCm<12);
-      const leafStage=isLawn?'Mown':heightCm<=6?'Residual':heightCm<=10?'1.0':heightCm<=14?'1.5–2.0':heightCm<=18?'2.0–2.5':heightCm<=24?'2.5–3.0':'3.0+';
-      const dV=dP+rP;
-      const quality=isLawn?'Lawn':(dV>0.45&&bP<0.08&&yP<0.12)?'High':(dV>0.22||mP>0.32)?'Medium':'Low';
-      const growthRate=isLawn?0:Math.max(15,Math.min(180,Math.round(40+dP*170+rP*95+mP*40-yP*55-bP*35)));
-      const confidence=(grassTotal>0.60&&avgExG>25&&gStd<35)?'high':(grassTotal>0.35&&avgExG>12)?'medium':'low';
-      resolve({grassDetected:true,swardType,isLikelyLawn:isLawn,heightCm,compressedCm,quality,leafStage,cloverPresent,postGrazing,greenPct:Math.round(grassTotal*100),brownPct:Math.round(bP*100),deepPct:dP,richPct:rP,midPct:mP,lightPct:lP,yellowPct:yP,shadowPct:dkP,avgExG,avgGCC,avgNGRDI,uniformity:Math.round(uniformity*100)/100,growthRate,confidence});
-    };
-    img.onerror=()=>resolve({grassDetected:false,grassPct:0});
-    img.src=dataUrl;
-  });
-}
-
-function computeResult(stats, season) {
-  const {heightCm,compressedCm,quality,leafStage,cloverPresent,postGrazing,isLikelyLawn,swardType,greenPct,brownPct,deepPct,richPct,yellowPct,avgNGRDI,growthRate,confidence,uniformity}=stats;
-  const baseK=swardType==='lawn'?170:swardType==='fescue'?260:swardType==='kikuyu'?230:280;
-  const sF=season.label==='Winter'?0.90:season.label==='Summer'?1.05:1.00;
-  const k=baseK*sF,bi=isLikelyLawn?200:500;
-  let kg=compressedCm*k+bi;
-  const dAdj=deepPct*400+richPct*180,sAdj=yellowPct*-380,bAdj=(brownPct/100)*-320,cAdj=cloverPresent?60:0;
-  const cAdjTotal=isLikelyLawn?0:dAdj+sAdj+bAdj+cAdj;
-  const mA=kg*0.15;
-  kg+=Math.max(-mA,Math.min(mA,cAdjTotal));
-  if(!isLikelyLawn){
-    const nb=Math.max(0,avgNGRDI)*6000+500;
-    const gc=Math.max(0.6,Math.min(1.15,(greenPct/100)/0.75));
-    kg=(kg*0.35)+(nb*gc*0.65)-yellowPct*400-(brownPct/100)*350+(cloverPresent?80:0);
-  }
-  kg=Math.round(Math.max(isLikelyLawn?200:500,Math.min(5500,kg)));
-  let notes,recommendation;
-  const sp=swardType==='fescue'?'Tall fescue paddock: ':swardType==='kikuyu'?'Kikuyu paddock: ':'';
-  if(isLikelyLawn){
-    const ld=heightCm<=3?'freshly mown':heightCm<=5?'well-maintained':'unmown';
-    notes=`Lawn detected (${ld}, ~${heightCm} cm, ${greenPct}% green cover). DM equivalent: ~${kg.toLocaleString()} kg DM/ha.`;
-    recommendation='For accurate dairy pasture readings, photograph actual farm paddocks from 1 m height, straight down.';
-  } else if(kg<1500){
-    notes=`${sp}Pasture is ${kg<1000?'severely overgrazed':'below residual target'} at ~${heightCm} cm visual (${compressedCm.toFixed(1)} cm compressed) with ${greenPct}% green cover. DairyNZ target post-grazing residual is 1,500-1,650 kg DM/ha.`;
-    recommendation=kg<1000?'Critical — remove stock immediately. Rest minimum 18-20 days.':'Remove cows now. Rest this paddock and prioritise higher-cover paddocks.';
-  } else if(kg<2000){
-    const d=Math.round((2500-kg)/Math.max(growthRate,20));
-    notes=`${sp}Pasture rebuilding at ~${heightCm} cm visual, ${greenPct}% green cover. At ${kg.toLocaleString()} kg DM/ha. Estimated ${d} days to reach ideal pre-grazing cover.`;
-    recommendation='Continue resting — not ready to graze. Target minimum 2,200 kg DM/ha before re-entry.';
-  } else if(kg<2800){
-    notes=`${sp}Good ${season.label.toLowerCase()} cover at ~${heightCm} cm visual, ${leafStage} leaf stage, ${greenPct}% green.${cloverPresent?' White clover visible.':''}`;
-    recommendation=kg<2400?'Almost ready — graze within 3-5 days.':(cloverPresent?'Excellent ryegrass/clover mix. Graze within 1-2 days. Target 1,500-1,650 kg DM/ha residual.':'Good cover — graze within 2-3 days. Target 1,500-1,650 kg DM/ha residual.');
-  } else if(kg<3500){
-    notes=`${sp}Pre-grazing yield ~${kg.toLocaleString()} kg DM/ha at ${heightCm} cm. Ideal pre-grazing range for 16-18 kg DM/cow/day.`;
-    recommendation=cloverPresent?'High-quality paddock. Graze immediately. Clover will maximise milksolids response.':'Graze immediately — covers above 3,200 kg DM/ha risk quality loss.';
-  } else {
-    notes=`${sp}Surplus at ~${heightCm} cm (${kg.toLocaleString()} kg DM/ha) — above 3,500 kg DM/ha threshold. Feed quality deteriorating.`;
-    recommendation='Act immediately — remove as silage or allocate to highest-producing cows.';
-  }
-  return {kgDMperHa:kg,heightCm,confidence,quality,leafStage,cloverPresent,postGrazing,isLikelyLawn,swardType,notes,recommendation,growthRate};
-}
-
-// ── Colours ───────────────────────────────────────────────────────────────────
-const C={bg:'#f2f2f7',card:'#fff',text:'#111',textSec:'#6b7280',textTert:'#9ca3af',green:'#1a5c3a',greenLight:'#e8f5ee',border:'#e5e7eb',redLight:'#fef2f2'};
-
-// ── Video helpers ─────────────────────────────────────────────────────────────
-function extractVideoFrames(videoUrl,numFrames=8){return new Promise((resolve,reject)=>{
-  const video=document.createElement('video');
-  video.muted=true;video.playsInline=true;video.setAttribute('playsinline','');video.setAttribute('webkit-playsinline','');video.preload='auto';
-  video.style.cssText='position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0';
-  document.body.appendChild(video);
-  let resolved=false;
-  const cleanup=()=>{try{video.pause();}catch(_){}try{video.removeAttribute('src');video.load();}catch(_){}try{document.body.removeChild(video);}catch(_){}};
-  const finish=r=>{if(resolved)return;resolved=true;cleanup();resolve(r);};
-  const fail=e=>{if(resolved)return;resolved=true;cleanup();reject(e);};
-  const ot=setTimeout(()=>fail(new Error('Video timeout')),25000);
-  const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
-  const frames=[],times=[];let dur=0;
-  const captureFrame=idx=>{try{const w=video.videoWidth||640,hh=video.videoHeight||480;if(w<50||hh<50)return false;if(canvas.width!==480){const sc=480/w;canvas.width=480;canvas.height=Math.round(hh*sc);}ctx.drawImage(video,0,0,canvas.width,canvas.height);const u=canvas.toDataURL('image/jpeg',0.82);if(u.length>2000){frames.push({url:u,angleDeg:Math.round((idx/Math.max(1,numFrames-1))*180),time:video.currentTime});return true;}}catch(_){}return false;};
-  const monitor=()=>{let fi=0;const loop=()=>{if(resolved)return;while(fi<times.length&&video.currentTime>=times[fi]){captureFrame(fi);fi++;}if(fi>=numFrames||video.ended||video.currentTime>=dur*0.98){while(fi<numFrames){captureFrame(fi);fi++;}clearTimeout(ot);frames.length>0?finish({frames,dur}):fail(new Error('No frames'));return;}requestAnimationFrame(loop);};requestAnimationFrame(loop);};
-  video.onloadedmetadata=()=>{dur=video.duration;if(!dur||!isFinite(dur)||dur<0.1){setTimeout(()=>{captureFrame(0)?finish({frames,dur:dur||1}):fail(new Error('No dur'));},500);return;}const st=dur*0.05,et=dur*0.95;for(let i=0;i<numFrames;i++)times.push(st+(et-st)*(numFrames===1?0.5:i/(numFrames-1)));};
-  video.onloadeddata=()=>{const p=video.play();if(p)p.then(()=>monitor()).catch(()=>{setTimeout(()=>{captureFrame(0)?finish({frames,dur:dur||1}):fail(new Error('Play failed'));},300);});else monitor();};
-  video.onerror=()=>fail(new Error('Video error'));
-  video.onended=()=>{if(!resolved&&frames.length>0){clearTimeout(ot);finish({frames,dur});}};
-  video.src=videoUrl;video.load();
+      if(hue>=15&&hue<50&&r>g&&r>b&&lum>38&&lum<195&&sat>8){br++;}
+    }
+    const [dP,rP,mP,lP,pP,yP,bP,dkP,grP,whP]=[dG,rG,mG,lG,pG,yG,br,sh,gr,wh].map(v=>v/n);
+    const gt=dP+rP+mP+lP+pP+yP;
+    const [aR,aG,aB]=[rS,gS,bS].map(v=>v/n);
+    const aEx=exS/n,aGC=gcS/n,aNg=ngS/n;
+    const p1=gt>=.12&&(aEx>6||aGC>.36),p2=dkP>.15&&aG>aR&&aG>aB*.95,p3=aG-aR>3&&aGC>.33&&grP+whP<.30;
+    if(!p1&&!p2&&!p3){resolve({grassDetected:false,grassPct:Math.round(gt*100)});return;}
+    const gMn=gn?glS/gn:0,gStd=Math.sqrt(Math.max(0,gn?(gc2/gn)-gMn*gMn:0));
+    const uni=Math.max(0,1-gStd/60);
+    const isLawn=mP>.28&&dP<.08&&dkP<.06&&bP<.08&&uni>.45&&aGC>.36;
+    const isFes=!isLawn&&dP>.15&&dkP>.08&&rP>.15&&lP<.12;
+    const isKik=!isLawn&&lP>.25&&dP<.10&&mP>.20&&yP<.15;
+    const sw=isLawn?'lawn':isFes?'fescue':isKik?'kikuyu':'ryegrass';
+    let vh;
+    if(isLawn)vh=2+mP*5+lP*6+yP*4+pP*3;
+    else if(isKik)vh=3+dP*20+rP*14+mP*9+lP*6+yP*5+dkP*9;
+    else{const sg=.5+Math.min(1,dkP/.10)*.5;vh=(dP*28+rP*17)*sg+mP*11+lP*5+pP*3+yP*7+dkP*13+bP+Math.max(0,aG-aR)/5;}
+    const hCm=Math.max(2,Math.min(40,Math.round(vh)));
+    const cR=isLawn?1.5:isFes?3.0:isKik?3.2:2.7;
+    const cCm=Math.max(.3,hCm/cR);
+    const clover=!isLawn&&lP>.08&&yP<.22&&rP>.08;
+    const pg=hCm<=8||(bP>.18&&hCm<12);
+    const leaf=isLawn?'Mown':hCm<=6?'Residual':hCm<=10?'1.0':hCm<=14?'1.5–2.0':hCm<=18?'2.0–2.5':hCm<=24?'2.5–3.0':'3.0+';
+    const dv=dP+rP;
+    const qual=isLawn?'Lawn':(dv>.45&&bP<.08&&yP<.12)?'High':(dv>.22||mP>.32)?'Medium':'Low';
+    const gr2=isLawn?0:Math.max(15,Math.min(180,Math.round(40+dP*170+rP*95+mP*40-yP*55-bP*35)));
+    const conf=(gt>.60&&aEx>25&&gStd<35)?'high':(gt>.35&&aEx>12)?'medium':'low';
+    resolve({grassDetected:true,sw,isLawn,hCm,cCm,qual,leaf,clover,pg,greenPct:Math.round(gt*100),brownPct:Math.round(bP*100),dP,rP,mP,lP,yP,dkP,aEx,aGC,aNg,uni:Math.round(uni*100)/100,gr:gr2,conf});
+  };
+  img.onerror=()=>resolve({grassDetected:false,grassPct:0});
+  img.src=dataUrl;
 });}
 
-function aggregateFrameStats(arr){
-  const valid=arr.filter(s=>s&&s.grassDetected);
-  if(!valid.length)return{grassDetected:false,grassPct:(arr.find(s=>s)||{grassPct:0}).grassPct};
-  const avg=k=>valid.reduce((s,x)=>s+(x[k]||0),0)/valid.length;
-  const median=k=>{const so=valid.map(x=>x[k]||0).sort((a,b)=>a-b),m=Math.floor(so.length/2);return so.length%2?so[m]:(so[m-1]+so[m])/2;};
-  const mode=k=>{const co={};valid.forEach(v=>{co[v[k]]=(co[v[k]]||0)+1;});return Object.keys(co).reduce((a,b)=>co[a]>co[b]?a:b);};
-  const hs=valid.map(v=>v.heightCm),hm=hs.reduce((s,x)=>s+x,0)/hs.length;
-  const hStd=Math.sqrt(hs.reduce((s,x)=>s+Math.pow(x-hm,2),0)/hs.length);
-  const vp=hStd>4?1:hStd>2?2:3;
-  const ct=valid.reduce((s,x)=>s+(x.confidence==='high'?3:x.confidence==='medium'?2:1),0)/valid.length;
-  const fc=Math.min(ct,vp);
-  return{grassDetected:true,swardType:mode('swardType'),isLikelyLawn:valid.filter(v=>v.isLikelyLawn).length>valid.length/2,heightCm:Math.round(median('heightCm')),compressedCm:median('heightCm')/2.7,quality:mode('quality'),leafStage:mode('leafStage'),cloverPresent:valid.filter(v=>v.cloverPresent).length>valid.length/2,postGrazing:valid.filter(v=>v.postGrazing).length>valid.length/2,greenPct:Math.round(avg('greenPct')),brownPct:Math.round(avg('brownPct')),deepPct:avg('deepPct'),richPct:avg('richPct'),midPct:avg('midPct'),lightPct:avg('lightPct'),yellowPct:avg('yellowPct'),shadowPct:avg('shadowPct'),avgExG:avg('avgExG'),avgGCC:avg('avgGCC'),avgNGRDI:avg('avgNGRDI'),uniformity:avg('uniformity'),growthRate:Math.round(avg('growthRate')),confidence:fc>=2.5?'high':fc>=1.5?'medium':'low',framesAnalysed:valid.length,heightStdDev:Math.round(hStd*10)/10,spatialVariance:hStd>4?'high':hStd>2?'moderate':'low'};
+function computeResult(s,season){
+  const{hCm,cCm,qual,leaf,clover,pg,isLawn,sw,greenPct,brownPct,dP,rP,yP,aNg,gr,conf,uni}=s;
+  const bK=sw==='lawn'?170:sw==='fescue'?260:sw==='kikuyu'?230:280;
+  const sF=season.label==='Winter'?.90:season.label==='Summer'?1.05:1;
+  let kg=cCm*bK*sF+(isLawn?200:500);
+  const adj=isLawn?0:(dP*400+rP*180)+(yP*-380)+(brownPct/100*-320)+(clover?60:0);
+  kg+=Math.max(-kg*.15,Math.min(kg*.15,adj));
+  if(!isLawn){
+    const nb=Math.max(0,aNg)*6000+500,gc=Math.max(.6,Math.min(1.15,(greenPct/100)/.75));
+    kg=kg*.35+nb*gc*.65-yP*400-(brownPct/100)*350+(clover?80:0);
+  }
+  kg=Math.round(Math.max(isLawn?200:500,Math.min(5500,kg)));
+  const sp=sw==='fescue'?'Tall fescue: ':sw==='kikuyu'?'Kikuyu: ':'';
+  let notes,rec;
+  if(isLawn){notes=`Lawn detected (~${hCm} cm, ${greenPct}% green). DM equivalent ~${kg.toLocaleString()} kg DM/ha.`;rec='For dairy readings, photograph farm paddocks from 1 m height.';}
+  else if(kg<1500){notes=`${sp}${kg<1000?'Severely overgrazed':'Below residual'} at ~${hCm} cm (${cCm.toFixed(1)} cm compressed), ${greenPct}% green. DairyNZ target is 1,500–1,650 kg DM/ha post-graze.`;rec=kg<1000?'Critical — remove stock immediately. Rest 18–20 days minimum.':'Remove cows now. Target 1,500–1,650 kg DM/ha residuals.';}
+  else if(kg<2000){const d=Math.round((2500-kg)/Math.max(gr,20));notes=`${sp}Rebuilding at ~${hCm} cm, ${greenPct}% green. At ${kg.toLocaleString()} kg DM/ha — estimated ${d} days to pre-grazing target.`;rec='Continue resting — not ready to graze. Target 2,200 kg DM/ha minimum.';}
+  else if(kg<2800){notes=`${sp}Good ${season.label.toLowerCase()} cover, ${leaf} leaf, ${greenPct}% green.${clover?' Clover present ✓':''}`;rec=kg<2400?'Almost ready — graze in 3–5 days.':clover?'Ideal ryegrass/clover. Graze within 1–2 days. Target 1,500–1,650 residual.':'Good cover — graze within 2–3 days. Target 1,500–1,650 residual.';}
+  else if(kg<3500){notes=`${sp}Pre-grazing ${kg.toLocaleString()} kg DM/ha at ${hCm} cm — ideal for 16–18 kg DM/cow/day.`;rec=clover?'Peak quality. Graze immediately, target 1,500–1,650 residual.':'Graze immediately — above 3,200 risks quality loss.';}
+  else{notes=`${sp}Surplus at ${hCm} cm (${kg.toLocaleString()} kg DM/ha) — above 3,500 threshold. Quality deteriorating.`;rec='Act immediately — ensile or allocate to highest-producing cows.';}
+  return{kgDMperHa:kg,hCm,conf,qual,leaf,clover,pg,isLawn,sw,notes,rec,gr};
 }
 
-// ── Tiny style helpers ────────────────────────────────────────────────────────
-const btn=(extra={})=>({border:'none',cursor:'pointer',fontFamily:'inherit',...extra});
-const card=(extra={})=>({background:C.card,borderRadius:16,boxShadow:'0 1px 3px rgba(0,0,0,0.07)',...extra});
+function aggregateFrames(arr){
+  const v=arr.filter(s=>s&&s.grassDetected);
+  if(!v.length)return{grassDetected:false,grassPct:(arr.find(s=>s)||{grassPct:0}).grassPct};
+  const avg=k=>v.reduce((s,x)=>s+(x[k]||0),0)/v.length;
+  const med=k=>{const so=v.map(x=>x[k]||0).sort((a,b)=>a-b),m=Math.floor(so.length/2);return so.length%2?so[m]:(so[m-1]+so[m])/2;};
+  const mode=k=>{const co={};v.forEach(x=>{co[x[k]]=(co[x[k]]||0)+1;});return Object.keys(co).reduce((a,b)=>co[a]>co[b]?a:b);};
+  const hs=v.map(x=>x.hCm),hm=hs.reduce((s,x)=>s+x,0)/hs.length;
+  const hSt=Math.sqrt(hs.reduce((s,x)=>s+(x-hm)**2,0)/hs.length);
+  const vp=hSt>4?1:hSt>2?2:3,ct=v.reduce((s,x)=>s+(x.conf==='high'?3:x.conf==='medium'?2:1),0)/v.length;
+  const fc=Math.min(ct,vp);
+  return{grassDetected:true,sw:mode('sw'),isLawn:v.filter(x=>x.isLawn).length>v.length/2,hCm:Math.round(med('hCm')),cCm:med('hCm')/2.7,qual:mode('qual'),leaf:mode('leaf'),clover:v.filter(x=>x.clover).length>v.length/2,pg:v.filter(x=>x.pg).length>v.length/2,greenPct:Math.round(avg('greenPct')),brownPct:Math.round(avg('brownPct')),dP:avg('dP'),rP:avg('rP'),mP:avg('mP'),lP:avg('lP'),yP:avg('yP'),dkP:avg('dkP'),aEx:avg('aEx'),aGC:avg('aGC'),aNg:avg('aNg'),uni:avg('uni'),gr:Math.round(avg('gr')),conf:fc>=2.5?'high':fc>=1.5?'medium':'low',frames:v.length,hSt:Math.round(hSt*10)/10,spatVar:hSt>4?'high':hSt>2?'moderate':'low'};
+}
 
-// ── Main App ──────────────────────────────────────────────────────────────────
-function PastureScan() {
-  const [screen,setScreen]=useState('home');
-  const [capturedImage,setCapturedImage]=useState(null);
-  const [result,setResult]=useState(null);
-  const [noGrass,setNoGrass]=useState(null);
-  const [season,setSeason]=useState(getCurrentSeason);
-  const [history,setHistory]=useState(()=>{try{return JSON.parse(localStorage.getItem('ps_history')||'[]');}catch(e){return [];}});
-  const [activeTab,setActiveTab]=useState('metrics');
-  const [progress,setProgress]=useState(0);
-  const [step,setStep]=useState(0);
-  const [showSeason,setShowSeason]=useState(false);
-  const [paddockName,setPaddockName]=useState('');
-  const [viewingReading,setViewingReading]=useState(null);
-  const [editingName,setEditingName]=useState(false);
-  const [editNameVal,setEditNameVal]=useState('');
-  const [user,setUser]=useState(()=>{try{const u=localStorage.getItem('ps_user');return u?JSON.parse(u):null;}catch(e){return null;}});
-  const [authScreen,setAuthScreen]=useState(null);
-  const [authMode,setAuthMode]=useState('login');
-  const [authForm,setAuthForm]=useState({name:'',email:'',password:'',farmName:''});
-  const [authError,setAuthError]=useState('');
-  const [authLoading,setAuthLoading]=useState(false);
-  const [shareCode,setShareCode]=useState(null);
-  const [importCode,setImportCode]=useState('');
-  const [importResult,setImportResult]=useState(null);
+// ─── Count-up hook ────────────────────────────────────────────────────────────
+function useCountUp(target,dur=1100){
+  const[val,setVal]=useState(0);
+  useEffect(()=>{
+    let t0=null;
+    const tick=ts=>{if(!t0)t0=ts;const p=Math.min((ts-t0)/dur,1),e=1-Math.pow(1-p,3);setVal(Math.round(e*target));if(p<1)requestAnimationFrame(tick);};
+    requestAnimationFrame(tick);
+  },[target]);
+  return val;
+}
+
+// ─── Swipeable history card ───────────────────────────────────────────────────
+function SwipeCard({children,onDelete,onClick}){
+  const[tx,setTx]=useState(0),[open,setOpen]=useState(false);
+  const sx=useRef(0),drag=useRef(false),moved=useRef(false);
+  const start=e=>{sx.current=e.touches[0].clientX;drag.current=true;moved.current=false;};
+  const move=e=>{if(!drag.current)return;const dx=e.touches[0].clientX-sx.current;if(Math.abs(dx)>4)moved.current=true;if(dx<0)setTx(Math.max(open?dx-80:dx,-80));};
+  const end=()=>{drag.current=false;if(tx<-45){setTx(-80);setOpen(true);}else{setTx(0);setOpen(false);}};
+  const tap=()=>{if(moved.current)return;if(open){setTx(0);setOpen(false);}else onClick&&onClick();};
+  return h('div',{className:'swipe-row',style:{marginBottom:10}},
+    h('div',{className:'swipe-del',onClick:()=>{setTx(0);setOpen(false);onDelete&&onDelete();}},
+      h('div',{style:{fontSize:18}},'🗑'),h('div',null,'Delete')),
+    h('div',{className:'swipe-content',style:{transform:`translateX(${tx}px)`,transition:drag.current?'none':'transform .2s ease',borderRadius:16,overflow:'hidden',boxShadow:C.shadow},
+      onTouchStart:start,onTouchMove:move,onTouchEnd:end,onClick:tap},children)
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function App(){
+  const[screen,setScreen]=useState('home');
+  const[dir,setDir]=useState('fwd');
+  const[capturedImg,setCapturedImg]=useState(null);
+  const[result,setResult]=useState(null);
+  const[noGrass,setNoGrass]=useState(null);
+  const[season,setSeason]=useState(getSeason);
+  const[history,setHistory]=useState(()=>{try{return JSON.parse(localStorage.getItem('ps_h')||'[]');}catch{return[];}});
+  const[activeTab,setActiveTab]=useState('metrics');
+  const[progress,setProgress]=useState(0);
+  const[step,setStep]=useState(0);
+  const[paddockName,setPaddockName]=useState('');
+  const[viewing,setViewing]=useState(null);
+  const[editName,setEditName]=useState('');
+  const[editingName,setEditingName]=useState(false);
+  const[user,setUser]=useState(()=>{try{const u=localStorage.getItem('ps_u');return u?JSON.parse(u):null;}catch{return null;}});
+  const[authScr,setAuthScr]=useState(null);
+  const[authMode,setAuthMode]=useState('login');
+  const[authForm,setAuthForm]=useState({name:'',email:'',password:'',farm:''});
+  const[authErr,setAuthErr]=useState('');
+  const[sunlight,setSunlight]=useState(false);
+  const[showSeason,setShowSeason]=useState(false);
+  const[shareCode,setShareCode]=useState(null);
+  const[importCode,setImportCode]=useState('');
+  const[importRes,setImportRes]=useState(null);
   const seasonRef=useRef(season);
   const fileRef=useRef(null);
 
-  useEffect(()=>{
-    try{const slim=history.map(r=>({...r,image:null}));localStorage.setItem('ps_history',JSON.stringify(slim));}catch(e){}
-  },[history]);
-  useEffect(()=>{if(user)localStorage.setItem('ps_user',JSON.stringify(user));else localStorage.removeItem('ps_user');},[user]);
+  useEffect(()=>{try{localStorage.setItem('ps_h',JSON.stringify(history.map(r=>({...r,image:null}))));}catch{};},[history]);
+  useEffect(()=>{if(user)localStorage.setItem('ps_u',JSON.stringify(user));else localStorage.removeItem('ps_u');},[user]);
+  useEffect(()=>{document.body.classList.toggle('sun',sunlight);},[sunlight]);
 
-  const setSeasonAndRef=s=>{setSeason(s);seasonRef.current=s;};
-  const openCamera=()=>fileRef.current&&fileRef.current.click();
+  const go=(s,d='fwd')=>{setDir(d);setScreen(s);};
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
-  const uKey=email=>'u:'+email.toLowerCase().trim();
-  const signup=async()=>{
-    setAuthError('');setAuthLoading(true);
-    const{name,email,farmName,password}=authForm;
-    if(!name.trim()||!email.trim()||!password.trim()){setAuthError('Please fill in all fields.');setAuthLoading(false);return;}
-    if(!/^[^@]+@[^@]+\.[^@]+$/.test(email)){setAuthError('Enter a valid email address.');setAuthLoading(false);return;}
-    if(password.length<6){setAuthError('Password must be at least 6 characters.');setAuthLoading(false);return;}
-    const existing=window._storage.get(uKey(email));
-    if(existing){setAuthError('An account with this email already exists.');setAuthLoading(false);return;}
-    const id=Date.now().toString(36)+Math.random().toString(36).slice(2);
-    const u={id,name:name.trim(),email:email.toLowerCase().trim(),farmName:farmName.trim(),ph:btoa(password)};
-    window._storage.set(uKey(email),JSON.stringify(u));
-    setUser(u);setAuthScreen(null);setAuthForm({name:'',email:'',password:'',farmName:''});
-    setAuthLoading(false);
+  // ─── Auth ────────────────────────────────────────────────────────────────
+  const signup=()=>{
+    setAuthErr('');const{name,email,password,farm}=authForm;
+    if(!name||!email||!password){setAuthErr('Fill in all fields.');return;}
+    if(!/^[^@]+@[^@]+\.[^@]+$/.test(email)){setAuthErr('Enter a valid email.');return;}
+    if(password.length<6){setAuthErr('Password must be 6+ characters.');return;}
+    const k='u:'+email.toLowerCase();
+    if(store.get(k)){setAuthErr('Account already exists.');return;}
+    const u={id:Date.now().toString(36),name:name.trim(),email:email.toLowerCase().trim(),farm:farm.trim(),ph:btoa(password)};
+    store.set(k,JSON.stringify(u));setUser(u);setAuthScr(null);setAuthForm({name:'',email:'',password:'',farm:''});
   };
-  const login=async()=>{
-    setAuthError('');setAuthLoading(true);
-    const{email,password}=authForm;
-    if(!email.trim()||!password.trim()){setAuthError('Enter your email and password.');setAuthLoading(false);return;}
-    const stored=window._storage.get(uKey(email));
-    if(!stored){setAuthError('No account found with this email.');setAuthLoading(false);return;}
-    const u=JSON.parse(stored.value);
-    if(u.ph!==btoa(password)){setAuthError('Incorrect password.');setAuthLoading(false);return;}
-    setUser(u);setAuthScreen(null);setAuthForm({name:'',email:'',password:'',farmName:''});
-    setAuthLoading(false);
+  const login=()=>{
+    setAuthErr('');const{email,password}=authForm;
+    if(!email||!password){setAuthErr('Enter email and password.');return;}
+    const d=store.get('u:'+email.toLowerCase());
+    if(!d){setAuthErr('No account with this email.');return;}
+    const u=JSON.parse(d.value);
+    if(u.ph!==btoa(password)){setAuthErr('Incorrect password.');return;}
+    setUser(u);setAuthScr(null);setAuthForm({name:'',email:'',password:'',farm:''});
   };
-  const logout=()=>{setUser(null);setAuthScreen(null);};
-
-  const generateShareCode=()=>{
+  const logout=()=>{setUser(null);setAuthScr(null);};
+  const genShare=()=>{
     if(!history.length)return;
-    const slim=history.map(r=>({id:r.id,paddock:r.paddock,date:r.date,time:r.time,season:r.season,kgDMperHa:r.result.kgDMperHa,heightCm:r.result.heightCm,leafStage:r.result.leafStage,quality:r.result.quality,cloverPresent:r.result.cloverPresent,confidence:r.result.confidence,growthRate:r.result.growthRate}));
-    const farm=user?(user.farmName||user.name):'Farm';
-    const raw=JSON.stringify({farm,exported:new Date().toLocaleDateString('en-NZ'),readings:slim});
+    const slim=history.map(r=>({id:r.id,paddock:r.paddock,date:r.date,season:r.season,kgDMperHa:r.result.kgDMperHa,hCm:r.result.hCm,leaf:r.result.leaf,qual:r.result.qual,clover:r.result.clover,conf:r.result.conf,gr:r.result.gr}));
+    const raw=JSON.stringify({farm:user?(user.farm||user.name):'Farm',date:new Date().toLocaleDateString('en-NZ'),readings:slim});
     const b64=btoa(encodeURIComponent(raw).replace(/%([0-9A-F]{2})/g,(_,p)=>String.fromCharCode(parseInt(p,16))));
     const code=b64.replace(/[^A-Z0-9]/gi,'').slice(0,20).toUpperCase();
-    window._storage.set('share:'+code,raw);setShareCode(code);
+    store.set('share:'+code,raw);setShareCode(code);
   };
-  const importFromCode=()=>{
-    const code=importCode.trim().toUpperCase();if(!code)return;setImportResult(null);
-    const stored=window._storage.get('share:'+code);
-    if(!stored){setImportResult({success:false,error:'Code not found.'});return;}
+  const doImport=()=>{
+    const code=importCode.trim().toUpperCase();if(!code)return;setImportRes(null);
+    const d=store.get('share:'+code);
+    if(!d){setImportRes({ok:false,msg:'Code not found.'});return;}
     try{
-      const payload=JSON.parse(stored.value);
-      const imported=payload.readings.map(r=>({id:r.id||Date.now()+Math.random(),paddock:r.paddock||'Imported',date:r.date,time:r.time||'',season:r.season||'',image:null,result:{kgDMperHa:r.kgDMperHa,heightCm:r.heightCm,leafStage:r.leafStage,quality:r.quality,cloverPresent:r.cloverPresent||false,confidence:r.confidence||'medium',growthRate:r.growthRate||80,notes:'',recommendation:'',postGrazing:false}}));
-      setHistory(prev=>{const ids=new Set(prev.map(x=>x.id));return[...imported.filter(x=>!ids.has(x.id)),...prev].sort((a,b)=>b.id-a.id);});
-      setImportResult({success:true,count:imported.length,farm:payload.farm});
-    }catch(e){setImportResult({success:false,error:'Invalid code.'});}
+      const p=JSON.parse(d.value);
+      const imp=p.readings.map(r=>({id:r.id||Date.now()+Math.random(),paddock:r.paddock||'Imported',date:r.date,time:'',season:r.season||'',image:null,result:{kgDMperHa:r.kgDMperHa,hCm:r.hCm||10,leaf:r.leaf||'',qual:r.qual||'',clover:r.clover||false,conf:r.conf||'medium',gr:r.gr||80,notes:'',rec:'',pg:false}}));
+      setHistory(prev=>{const ids=new Set(prev.map(x=>x.id));return[...imp.filter(x=>!ids.has(x.id)),...prev].sort((a,b)=>b.id-a.id);});
+      setImportRes({ok:true,msg:`Imported ${imp.length} readings from ${p.farm}`});
+    }catch{setImportRes({ok:false,msg:'Invalid code.'});}
   };
-
   const exportReport=()=>{
-    const farm=user?(user.farmName||user.name):'Farm';
-    const rows=history.map(h=>{const cat=getDMCat(h.result.kgDMperHa);return`<tr><td>${h.paddock}</td><td>${h.date}</td><td>${h.season}</td><td style="font-weight:700;color:${cat.color}">${h.result.kgDMperHa.toLocaleString()}</td><td>${h.result.heightCm} cm</td><td>${h.result.leafStage}</td><td>${h.result.quality}</td><td>${h.result.cloverPresent?'Yes':'No'}</td><td>${h.result.growthRate}</td><td>${Math.round(h.result.kgDMperHa/17)}</td></tr>`;}).join('');
+    const farm=user?(user.farm||user.name):'Farm';
+    const rows=history.map(h=>{const cat=getCat(h.result.kgDMperHa);return`<tr><td>${h.paddock}</td><td>${h.date}</td><td>${h.season}</td><td style="color:${cat.color};font-weight:700">${h.result.kgDMperHa.toLocaleString()}</td><td>${h.result.hCm} cm</td><td>${h.result.leaf}</td><td>${h.result.qual}</td><td>${h.result.clover?'✓':''}</td><td>${h.result.gr}</td><td>${Math.round(h.result.kgDMperHa/17)}</td></tr>`;}).join('');
     const ds=new Date().toLocaleDateString('en-NZ');
-    const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>PastureScan Report</title><style>body{font-family:-apple-system,sans-serif;padding:24px;color:#111}h1{color:#1a5c3a;font-size:22px}h2{font-size:13px;color:#6b7280;font-weight:400;margin-bottom:24px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#1a5c3a;color:#fff;padding:10px 8px;text-align:left}td{padding:9px 8px;border-bottom:1px solid #e5e7eb}tr:nth-child(even) td{background:#f9fafb}</style></head><body><h1>PastureScan — Pasture Cover Report</h1><h2>${farm} · ${history.length} readings · ${ds}</h2><table><thead><tr><th>Paddock</th><th>Date</th><th>Season</th><th>kg DM/ha</th><th>Height</th><th>Leaf Stage</th><th>Quality</th><th>Clover</th><th>Growth Rate</th><th>Cow-days/ha</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
-    const blob=new Blob([html],{type:'text/html'});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');a.href=url;a.download=`PastureScan-${ds.replace(/\//g,'-')}.html`;
-    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+    const doc=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>PastureScan Report</title><style>body{font-family:-apple-system,sans-serif;padding:24px;color:#111}h1{color:#16a34a;margin-bottom:4px}h2{font-size:13px;color:#64748b;font-weight:400;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#16a34a;color:#fff;padding:9px 8px;text-align:left}td{padding:8px;border-bottom:1px solid #e2e8f0}tr:nth-child(even) td{background:#f8fafc}</style></head><body><h1>PastureScan Report</h1><h2>${farm} · ${history.length} readings · ${ds}</h2><table><thead><tr><th>Paddock</th><th>Date</th><th>Season</th><th>kg DM/ha</th><th>Height</th><th>Leaf</th><th>Quality</th><th>Clover</th><th>Growth</th><th>Cow-days</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([doc],{type:'text/html'}));a.download=`PastureScan-${ds.replace(/\//g,'-')}.html`;document.body.appendChild(a);a.click();document.body.removeChild(a);
   };
 
-  // ── Analysis ──────────────────────────────────────────────────────────────
-  const runAnalysis=useCallback(async url=>{
-    setNoGrass(null);setResult(null);setScreen('analyzing');setProgress(0);setStep(0);
+  // ─── Analysis ────────────────────────────────────────────────────────────
+  const runAnalysis=useCallback(async(frames,previewUrl)=>{
+    setResult(null);setNoGrass(null);setScreen('analyzing');setProgress(0);setStep(0);
     const cur=seasonRef.current,delay=ms=>new Promise(r=>setTimeout(r,ms));
-    setStep(0);setProgress(15);await delay(350);setStep(1);setProgress(40);
-    const stats=await analysePixels(url);
-    await delay(300);setStep(2);setProgress(72);await delay(300);
-    setStep(3);setProgress(92);await delay(200);setProgress(100);await delay(200);
-    if(!stats.grassDetected){setNoGrass({grassPct:stats.grassPct});setScreen('no-grass');}
-    else{setResult(computeResult(stats,cur));setActiveTab('metrics');setScreen('result');}
+    setStep(0);setProgress(12);await delay(300);setStep(1);setProgress(35);
+    let combined;
+    if(frames.length===1){
+      const s=await analysePixels(frames[0]);setProgress(72);await delay(200);setStep(2);setProgress(88);await delay(200);combined=s;
+    } else {
+      const fs=[];
+      for(let i=0;i<frames.length;i++){fs.push(await analysePixels(frames[i]));setProgress(35+Math.round((i+1)/frames.length*45));}
+      setStep(2);setProgress(88);await delay(200);
+      combined=aggregateFrames(fs);combined.frames=fs.filter(s=>s.grassDetected).length;combined.spatVar=combined.spatVar;
+    }
+    setStep(3);setProgress(100);await delay(250);
+    if(!combined.grassDetected){setNoGrass({grassPct:combined.grassPct});go('no-grass');}
+    else{const r=computeResult(combined,cur);if(frames.length>1){r.framesAnalysed=combined.frames;r.spatVar=combined.spatVar;r.hSt=combined.hSt;r.isVideo=true;}setResult(r);setActiveTab('metrics');go('result');}
   },[]);
-
-  const runVideoAnalysis=useCallback(async videoUrl=>{
-    setNoGrass(null);setResult(null);setScreen('analyzing');setProgress(0);setStep(0);
-    const cur=seasonRef.current,delay=ms=>new Promise(r=>setTimeout(r,ms));
-    try{
-      setStep(0);setProgress(10);await delay(300);setStep(1);setProgress(25);
-      let fr;
-      try{fr=await extractVideoFrames(videoUrl,8);}catch(e){setNoGrass({grassPct:0,error:"Couldn't process the video. Try a single photo instead."});setScreen('no-grass');return;}
-      const{frames}=fr;
-      if(!frames||!frames.length){setNoGrass({grassPct:0,error:"Couldn't extract frames. Please try again."});setScreen('no-grass');return;}
-      setCapturedImage(frames[Math.floor(frames.length/2)].url);
-      setStep(2);setProgress(50);
-      const fs=[];for(let i=0;i<frames.length;i++){fs.push(await analysePixels(frames[i].url));setProgress(50+Math.round((i+1)/frames.length*35));}
-      setStep(3);setProgress(92);await delay(250);
-      const combined=aggregateFrameStats(fs);
-      setProgress(100);await delay(200);
-      if(!combined.grassDetected){setNoGrass({grassPct:combined.grassPct,error:`Only ${combined.grassPct}% green pixels detected. Ensure lens points at grass.`});setScreen('no-grass');}
-      else{const r=computeResult(combined,cur);r.framesAnalysed=combined.framesAnalysed;r.spatialVariance=combined.spatialVariance;r.heightStdDev=combined.heightStdDev;r.isVideo=true;setResult(r);setActiveTab('metrics');setScreen('result');}
-    }catch(e){setNoGrass({grassPct:0,error:'Something went wrong. Please try again.'});setScreen('no-grass');}
-  },[]);
-
-  const handleFile=useCallback(e=>{
-    const file=e.target.files&&e.target.files[0];if(!file)return;e.target.value='';
-    const isVideo=file.type.startsWith('video/');
-    const reader=new FileReader();
-    reader.onload=ev=>{const url=ev.target.result;setCapturedImage(url);if(isVideo)runVideoAnalysis(url);else runAnalysis(url);};
-    reader.readAsDataURL(file);
-  },[runAnalysis,runVideoAnalysis]);
 
   const saveReading=useCallback(()=>{
     if(!result)return;
-    const newR={id:Date.now(),paddock:paddockName.trim()||'Reading '+(history.length+1),date:new Date().toLocaleDateString('en-NZ'),time:new Date().toLocaleTimeString('en-NZ',{hour:'2-digit',minute:'2-digit'}),image:null,result,season:season.label};
-    setHistory(prev=>[newR,...prev.slice(0,49)]);
-    setPaddockName('');setResult(null);setCapturedImage(null);setScreen('home');
+    const r={id:Date.now(),paddock:paddockName.trim()||`Reading ${history.length+1}`,date:new Date().toLocaleDateString('en-NZ'),time:new Date().toLocaleTimeString('en-NZ',{hour:'2-digit',minute:'2-digit'}),image:null,result,season:season.label};
+    setHistory(p=>[r,...p.slice(0,49)]);
+    setPaddockName('');setResult(null);setCapturedImg(null);go('home','back');
   },[result,paddockName,season,history]);
 
-  // ── File input ────────────────────────────────────────────────────────────
-  const fileInput=h('input',{ref:fileRef,type:'file',accept:'video/*,image/*',capture:'environment',style:{display:'none'},onChange:handleFile});
+  const fileRef2=useRef(null);
+  const openFilePicker=()=>fileRef2.current&&fileRef2.current.click();
+  const handleFile=useCallback(e=>{
+    const f=e.target.files&&e.target.files[0];if(!f)return;e.target.value='';
+    const isVid=f.type.startsWith('video/');
+    const reader=new FileReader();
+    reader.onload=async ev=>{
+      const url=ev.target.result;setCapturedImg(url);
+      if(isVid){
+        // Extract frames from video
+        const video=document.createElement('video');video.muted=true;video.playsInline=true;
+        video.style.cssText='position:fixed;top:-9999px;left:-9999px;opacity:0;width:1px;height:1px';
+        document.body.appendChild(video);
+        const frames=[];
+        await new Promise(res=>{
+          video.onloadedmetadata=()=>{
+            const dur=video.duration;const times=[];
+            for(let i=0;i<8;i++)times.push(dur*.05+(dur*.9)*(i/7));
+            const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
+            const playP=video.play();
+            const capture=()=>{if(video.videoWidth>0){canvas.width=480;canvas.height=Math.round(video.videoHeight*(480/video.videoWidth));ctx.drawImage(video,0,0,canvas.width,canvas.height);frames.push(canvas.toDataURL('image/jpeg',.85));}};
+            const monitor=()=>{if(frames.length>=8||video.ended){video.pause();document.body.removeChild(video);res();}else{capture();requestAnimationFrame(monitor);}};
+            if(playP)playP.then(()=>requestAnimationFrame(monitor)).catch(()=>{document.body.removeChild(video);res();});
+          };
+          video.onerror=()=>{document.body.removeChild(video);res();};
+          video.src=url;video.load();
+          setTimeout(()=>{document.body.removeChild(video);res();},15000);
+        });
+        setCapturedImg(frames[Math.floor(frames.length/2)]||url);
+        runAnalysis(frames.length>0?frames:[url],url);
+      } else {runAnalysis([url],url);}
+    };
+    reader.readAsDataURL(f);
+  },[runAnalysis]);
 
-  // ── AUTH SCREEN ───────────────────────────────────────────────────────────
-  if(authScreen){
-    const isAcc=authScreen==='account';
-    return h('div',{style:{fontFamily:'inherit',background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto'}},
-      fileInput,
-      h('div',{style:{background:C.green,padding:'52px 20px 20px',display:'flex',alignItems:'center',justifyContent:'space-between'}},
-        h('button',{onClick:()=>{setAuthScreen(null);setAuthError('');setShareCode(null);setImportResult(null);},style:btn({background:'rgba(255,255,255,0.15)',borderRadius:20,padding:'7px 14px',color:'#fff',fontSize:13,fontWeight:600})},'← Back'),
-        h('div',{style:{fontSize:16,fontWeight:700,color:'#fff'}},isAcc?'My Account':authMode==='login'?'Sign In':'Create Account'),
-        h('div',{style:{width:70}})
+  // ─── Auth screen ─────────────────────────────────────────────────────────
+  if(authScr){
+    const isAcc=authScr==='account';
+    const inp=(val,onChange,type='text',ph='')=>h('input',{value:val,onChange,type,placeholder:ph,style:{width:'100%',boxSizing:'border-box',padding:'14px 16px',border:`1.5px solid ${C.border}`,borderRadius:14,fontSize:16,color:C.text,background:'#fff'}});
+    return h('div',{style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto'}},
+      h('div',{style:{background:C.green,padding:'56px 20px 20px',display:'flex',alignItems:'center',gap:16}},
+        h('button',{onClick:()=>{setAuthScr(null);setAuthErr('');setShareCode(null);setImportRes(null);},style:{background:'rgba(255,255,255,0.18)',borderRadius:20,padding:'8px 16px',color:'#fff',fontSize:14,fontWeight:600}},'← Back'),
+        h('div',{style:{fontSize:17,fontWeight:700,color:'#fff'}},isAcc?'My Account':authMode==='login'?'Sign In':'Create Account')
       ),
       h('div',{style:{padding:'24px 20px 48px'}},
         isAcc&&user&&h(Fragment,null,
-          h('div',{style:{...card(),padding:20,marginBottom:14}},
+          h('div',{style:{background:C.card,borderRadius:20,padding:20,marginBottom:14,boxShadow:C.shadow}},
             h('div',{style:{display:'flex',alignItems:'center',gap:14,marginBottom:16}},
-              h('div',{style:{width:52,height:52,borderRadius:26,background:C.green,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22}},'👤'),
-              h('div',null,
-                h('div',{style:{fontSize:18,fontWeight:700,color:C.text}},user.name),
-                h('div',{style:{fontSize:13,color:C.textSec}},user.email),
-                user.farmName&&h('div',{style:{fontSize:12,color:C.green,fontWeight:600,marginTop:2}},'🌿 '+user.farmName)
-              )
+              h('div',{style:{width:56,height:56,borderRadius:28,background:`linear-gradient(135deg,${C.green},${C.greenDk})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,color:'#fff'}},'👤'),
+              h('div',null,h('div',{style:{fontSize:19,fontWeight:700,color:C.text}},user.name),h('div',{style:{fontSize:13,color:C.textSec}},user.email),user.farm&&h('div',{style:{fontSize:12,color:C.green,fontWeight:600,marginTop:3}},'🌿 '+user.farm))
             ),
             h('div',{style:{display:'flex',gap:10}},
-              h('div',{style:{flex:1,background:C.greenLight,borderRadius:10,padding:10,textAlign:'center'}},
-                h('div',{style:{fontSize:20,fontWeight:800,color:C.green}},history.length),
-                h('div',{style:{fontSize:11,color:C.green}},'Readings')
-              ),
-              h('div',{style:{flex:1,background:'#f5f5f5',borderRadius:10,padding:10,textAlign:'center'}},
-                h('div',{style:{fontSize:20,fontWeight:800,color:C.text}},history.length?Math.round(history.reduce((s,hh)=>s+hh.result.kgDMperHa,0)/history.length).toLocaleString():'—'),
-                h('div',{style:{fontSize:11,color:C.textSec}},'Avg kg DM/ha')
-              )
+              h('div',{style:{flex:1,background:C.greenLt,borderRadius:12,padding:12,textAlign:'center'}},h('div',{style:{fontSize:22,fontWeight:800,color:C.green}},history.length),h('div',{style:{fontSize:11,color:C.green,fontWeight:600}},'READINGS')),
+              h('div',{style:{flex:1,background:'#f8fafc',borderRadius:12,padding:12,textAlign:'center'}},h('div',{style:{fontSize:22,fontWeight:800,color:C.text}},history.length?Math.round(history.reduce((s,hh)=>s+hh.result.kgDMperHa,0)/history.length).toLocaleString():'—'),h('div',{style:{fontSize:11,color:C.textSec,fontWeight:600}},'AVG kg DM/ha'))
             )
           ),
-          h('div',{style:{...card(),padding:'18px 20px',marginBottom:12}},
-            h('div',{style:{fontSize:15,fontWeight:700,color:C.text,marginBottom:4}},'📤 Share Readings'),
-            h('div',{style:{fontSize:13,color:C.textSec,marginBottom:12}},'Generate a code to share your readings.'),
-            shareCode
-              ?h('div',null,
-                  h('div',{style:{background:C.greenLight,borderRadius:12,padding:14,marginBottom:10,textAlign:'center'}},
-                    h('div',{style:{fontSize:11,color:C.green,fontWeight:600,marginBottom:6}},'Share this code'),
-                    h('div',{style:{fontSize:22,fontWeight:800,color:C.green,letterSpacing:'3px',fontFamily:'monospace'}},shareCode)
-                  ),
-                  h('button',{onClick:()=>setShareCode(null),style:btn({width:'100%',background:'transparent',border:'1.5px solid '+C.border,borderRadius:12,padding:12,color:C.textSec,fontSize:14,fontWeight:600})},'Generate New Code')
-                )
-              :h('button',{onClick:generateShareCode,disabled:!history.length,style:btn({width:'100%',background:history.length?C.green:'#ccc',borderRadius:12,padding:14,color:'#fff',fontSize:14,fontWeight:700})},`📤 Generate Share Code (${history.length} readings)`)
+          h('div',{style:{background:C.card,borderRadius:20,padding:'18px 20px',marginBottom:12,boxShadow:C.shadow}},
+            h('div',{style:{fontWeight:700,color:C.text,marginBottom:4}},'📤 Share Readings'),
+            h('div',{style:{fontSize:13,color:C.textSec,marginBottom:12}},'Share a code with other PastureScan users.'),
+            shareCode?h('div',null,h('div',{style:{background:C.greenLt,borderRadius:14,padding:16,textAlign:'center',marginBottom:10}},h('div',{style:{fontSize:11,color:C.green,fontWeight:600,marginBottom:6,letterSpacing:1}},'SHARE CODE'),h('div',{style:{fontSize:24,fontWeight:800,color:C.green,letterSpacing:4,fontFamily:'monospace'}},shareCode)),h('button',{onClick:()=>setShareCode(null),style:{width:'100%',background:'transparent',border:`1.5px solid ${C.border}`,borderRadius:12,padding:12,color:C.textSec,fontSize:14,fontWeight:600}},'Generate New Code')):h('button',{onClick:genShare,disabled:!history.length,style:{width:'100%',background:history.length?C.green:'#cbd5e1',borderRadius:14,padding:14,color:'#fff',fontSize:14,fontWeight:700}},`📤 Generate Code (${history.length} readings)`)
           ),
-          h('div',{style:{...card(),padding:'18px 20px',marginBottom:12}},
-            h('div',{style:{fontSize:15,fontWeight:700,color:C.text,marginBottom:4}},'📥 Import Readings'),
-            h('input',{value:importCode,onChange:e=>setImportCode(e.target.value.toUpperCase()),placeholder:'Enter share code',style:{width:'100%',boxSizing:'border-box',padding:'12px 14px',border:'1.5px solid '+C.border,borderRadius:12,fontSize:15,fontFamily:'monospace',letterSpacing:'2px',marginBottom:10,outline:'none',color:C.text}}),
-            h('button',{onClick:importFromCode,disabled:!importCode.trim(),style:btn({width:'100%',background:importCode.trim()?C.green:'#ccc',borderRadius:12,padding:14,color:'#fff',fontSize:14,fontWeight:700})},'📥 Import'),
-            importResult&&h('div',{style:{marginTop:10,padding:'12px 14px',background:importResult.success?'#f0fdf4':'#fef2f2',borderRadius:10,fontSize:13,color:importResult.success?'#166534':'#dc2626',fontWeight:600}},
-              importResult.success?`Imported ${importResult.count} readings from ${importResult.farm}`:importResult.error)
+          h('div',{style:{background:C.card,borderRadius:20,padding:'18px 20px',marginBottom:12,boxShadow:C.shadow}},
+            h('div',{style:{fontWeight:700,color:C.text,marginBottom:4}},'📥 Import Readings'),
+            h('input',{value:importCode,onChange:e=>setImportCode(e.target.value.toUpperCase()),placeholder:'Enter share code',style:{width:'100%',boxSizing:'border-box',padding:'12px 14px',border:`1.5px solid ${C.border}`,borderRadius:12,fontSize:15,fontFamily:'monospace',letterSpacing:2,marginBottom:10,outline:'none',color:C.text}}),
+            h('button',{onClick:doImport,style:{width:'100%',background:C.green,borderRadius:12,padding:13,color:'#fff',fontSize:14,fontWeight:700}},'📥 Import'),
+            importRes&&h('div',{style:{marginTop:10,padding:'11px 14px',background:importRes.ok?C.greenLt:'#fef2f2',borderRadius:10,fontSize:13,color:importRes.ok?C.greenDk:C.red,fontWeight:600}},importRes.msg)
           ),
-          h('div',{style:{...card(),padding:'18px 20px',marginBottom:14}},
-            h('div',{style:{fontSize:15,fontWeight:700,color:C.text,marginBottom:4}},'📄 Export Report'),
-            h('button',{onClick:exportReport,disabled:!history.length,style:btn({width:'100%',background:history.length?'#0f766e':'#ccc',borderRadius:12,padding:14,color:'#fff',fontSize:14,fontWeight:700})},`📄 Download Report (${history.length} readings)`)
+          h('div',{style:{background:C.card,borderRadius:20,padding:'18px 20px',marginBottom:16,boxShadow:C.shadow}},
+            h('div',{style:{fontWeight:700,color:C.text,marginBottom:4}},'📄 Export Report'),
+            h('button',{onClick:exportReport,disabled:!history.length,style:{width:'100%',background:history.length?'#0f766e':'#cbd5e1',borderRadius:14,padding:14,color:'#fff',fontSize:14,fontWeight:700}},`📄 Download (${history.length} readings)`)
           ),
-          h('button',{onClick:logout,style:btn({width:'100%',background:'transparent',border:'1.5px solid #fee2e2',borderRadius:12,padding:14,color:'#dc2626',fontSize:14,fontWeight:600})},'Sign Out')
+          h('button',{onClick:logout,style:{width:'100%',background:'transparent',border:'1.5px solid #fecaca',borderRadius:14,padding:14,color:C.red,fontSize:15,fontWeight:600}},'Sign Out')
         ),
-        isAcc&&!user&&h('div',{style:{textAlign:'center',padding:'40px 0'}},
-          h('div',{style:{fontSize:48,marginBottom:16}},'🌿'),
-          h('div',{style:{fontSize:18,fontWeight:700,color:C.text,marginBottom:8}},'Sign in to PastureScan'),
-          h('div',{style:{fontSize:14,color:C.textSec,marginBottom:24,lineHeight:1.5}},'Save readings, share with your team, and export reports.'),
-          h('button',{onClick:()=>{setAuthScreen('auth');setAuthMode('login');},style:btn({width:'100%',background:C.green,borderRadius:12,padding:'14px 32px',color:'#fff',fontSize:15,fontWeight:700,marginBottom:12})},'Sign In'),
-          h('button',{onClick:()=>{setAuthScreen('auth');setAuthMode('signup');},style:btn({width:'100%',background:'transparent',border:'1.5px solid '+C.border,borderRadius:12,padding:'14px 32px',color:C.text,fontSize:15,fontWeight:700})},'Create Account')
+        isAcc&&!user&&h('div',{style:{textAlign:'center',padding:'60px 0'}},
+          h('div',{style:{fontSize:60,marginBottom:20}},'🌿'),
+          h('div',{style:{fontSize:22,fontWeight:800,color:C.text,marginBottom:8}},'Sign in to PastureScan'),
+          h('div',{style:{fontSize:15,color:C.textSec,marginBottom:32,lineHeight:1.6}},'Save readings, share with your team\nand export reports.'),
+          h('button',{onClick:()=>{setAuthScr('auth');setAuthMode('login');},style:{width:'100%',background:C.green,borderRadius:16,padding:16,color:'#fff',fontSize:16,fontWeight:700,marginBottom:12}},'Sign In'),
+          h('button',{onClick:()=>{setAuthScr('auth');setAuthMode('signup');},style:{width:'100%',background:'transparent',border:`1.5px solid ${C.border}`,borderRadius:16,padding:16,color:C.text,fontSize:16,fontWeight:700}},'Create Free Account')
         ),
-        authScreen==='auth'&&h('div',{style:{...card(),padding:'24px 20px'}},
-          h('div',{style:{textAlign:'center',marginBottom:24}},
-            h('div',{style:{fontSize:40,marginBottom:8}},'🌿'),
-            h('div',{style:{fontSize:20,fontWeight:700,color:C.text}},authMode==='login'?'Welcome back':'Create account'),
-            h('div',{style:{fontSize:13,color:C.textSec,marginTop:4}},authMode==='login'?'Sign in to sync your readings':'Free account to save and share readings')
-          ),
+        authScr==='auth'&&h('div',{style:{background:C.card,borderRadius:20,padding:'28px 20px',boxShadow:C.shadow}},
+          h('div',{style:{textAlign:'center',marginBottom:28}},h('div',{style:{fontSize:44,marginBottom:12}},'🌿'),h('div',{style:{fontSize:22,fontWeight:800,color:C.text}},authMode==='login'?'Welcome back':'Create account'),h('div',{style:{fontSize:14,color:C.textSec,marginTop:6}},authMode==='login'?'Sign in to sync your readings':'Free — save and share your readings')),
           authMode==='signup'&&h(Fragment,null,
-            h('div',{style:{marginBottom:14}},
-              h('div',{style:{fontSize:12,fontWeight:600,color:C.textSec,marginBottom:6}},'YOUR NAME'),
-              h('input',{value:authForm.name,onChange:e=>setAuthForm(f=>({...f,name:e.target.value})),placeholder:'e.g. John Smith',style:{width:'100%',boxSizing:'border-box',padding:'13px 14px',border:'1.5px solid '+C.border,borderRadius:12,fontSize:15,outline:'none',color:C.text}})
-            ),
-            h('div',{style:{marginBottom:14}},
-              h('div',{style:{fontSize:12,fontWeight:600,color:C.textSec,marginBottom:6}},'FARM NAME (OPTIONAL)'),
-              h('input',{value:authForm.farmName,onChange:e=>setAuthForm(f=>({...f,farmName:e.target.value})),placeholder:'e.g. Greenfield Dairy',style:{width:'100%',boxSizing:'border-box',padding:'13px 14px',border:'1.5px solid '+C.border,borderRadius:12,fontSize:15,outline:'none',color:C.text}})
-            )
+            h('div',{style:{marginBottom:14}},h('div',{style:{fontSize:11,fontWeight:700,color:C.textSec,marginBottom:6,letterSpacing:1}},'YOUR NAME'),inp(authForm.name,e=>setAuthForm(f=>({...f,name:e.target.value})),'text','John Smith')),
+            h('div',{style:{marginBottom:14}},h('div',{style:{fontSize:11,fontWeight:700,color:C.textSec,marginBottom:6,letterSpacing:1}},'FARM NAME (OPTIONAL)'),inp(authForm.farm,e=>setAuthForm(f=>({...f,farm:e.target.value})),'text','Greenfield Dairy'))
           ),
-          h('div',{style:{marginBottom:14}},
-            h('div',{style:{fontSize:12,fontWeight:600,color:C.textSec,marginBottom:6}},'EMAIL'),
-            h('input',{value:authForm.email,onChange:e=>setAuthForm(f=>({...f,email:e.target.value})),type:'email',placeholder:'you@example.com',style:{width:'100%',boxSizing:'border-box',padding:'13px 14px',border:'1.5px solid '+C.border,borderRadius:12,fontSize:15,outline:'none',color:C.text}})
-          ),
-          h('div',{style:{marginBottom:20}},
-            h('div',{style:{fontSize:12,fontWeight:600,color:C.textSec,marginBottom:6}},'PASSWORD'),
-            h('input',{value:authForm.password,onChange:e=>setAuthForm(f=>({...f,password:e.target.value})),type:'password',placeholder:authMode==='signup'?'Min. 6 characters':'Your password',style:{width:'100%',boxSizing:'border-box',padding:'13px 14px',border:'1.5px solid '+C.border,borderRadius:12,fontSize:15,outline:'none',color:C.text}})
-          ),
-          authError&&h('div',{style:{background:'#fef2f2',border:'1px solid #fee2e2',borderRadius:10,padding:'12px 14px',marginBottom:16,fontSize:13,color:'#dc2626',fontWeight:600}},'⚠️ '+authError),
-          h('button',{onClick:authMode==='login'?login:signup,disabled:authLoading,style:btn({width:'100%',background:authLoading?'#aaa':C.green,borderRadius:12,padding:16,color:'#fff',fontSize:16,fontWeight:700,marginBottom:14})},authLoading?'Please wait...':authMode==='login'?'Sign In':'Create Account'),
-          h('button',{onClick:()=>{setAuthMode(authMode==='login'?'signup':'login');setAuthError('');},style:btn({width:'100%',background:'transparent',padding:8,color:C.green,fontSize:14,fontWeight:600})},authMode==='login'?"Don't have an account? Sign up":"Already have an account? Sign in")
+          h('div',{style:{marginBottom:14}},h('div',{style:{fontSize:11,fontWeight:700,color:C.textSec,marginBottom:6,letterSpacing:1}},'EMAIL'),inp(authForm.email,e=>setAuthForm(f=>({...f,email:e.target.value})),'email','you@example.com')),
+          h('div',{style:{marginBottom:20}},h('div',{style:{fontSize:11,fontWeight:700,color:C.textSec,marginBottom:6,letterSpacing:1}},'PASSWORD'),inp(authForm.password,e=>setAuthForm(f=>({...f,password:e.target.value})),'password',authMode==='signup'?'Min. 6 characters':'Your password')),
+          authErr&&h('div',{style:{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,padding:'12px 16px',marginBottom:16,fontSize:13,color:C.red,fontWeight:600}},'⚠️ '+authErr),
+          h('button',{onClick:authMode==='login'?login:signup,style:{width:'100%',background:C.green,borderRadius:14,padding:17,color:'#fff',fontSize:16,fontWeight:700,marginBottom:14}},authMode==='login'?'Sign In →':'Create Account →'),
+          h('button',{onClick:()=>{setAuthMode(authMode==='login'?'signup':'login');setAuthErr('');},style:{width:'100%',background:'transparent',padding:8,color:C.green,fontSize:14,fontWeight:600}},authMode==='login'?"Don't have an account? Sign up →":"Have an account? Sign in →")
         )
       )
     );
   }
 
-  // ── HOME ──────────────────────────────────────────────────────────────────
-  if(screen==='home'){
-    const avg=history.length?Math.round(history.reduce((s,hh)=>s+hh.result.kgDMperHa,0)/history.length):null;
-    return h('div',{style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto'}},
-      fileInput,
-      h('div',{style:{background:C.green,padding:'52px 20px 18px'}},
-        h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between'}},
-          h('div',{style:{display:'flex',alignItems:'center',gap:10}},
-            h('button',{onClick:()=>setAuthScreen('account'),style:btn({background:'rgba(255,255,255,0.15)',borderRadius:20,width:36,height:36,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center'})},
-              h('svg',{width:18,height:18,viewBox:'0 0 18 18',fill:'none'},
-                h('circle',{cx:9,cy:9,r:8,stroke:'white',strokeWidth:'1.5',fill:'none'}),
-                h('rect',{x:'4.5',y:6,width:9,height:'1.5',rx:'.75',fill:'white'}),
-                h('rect',{x:'4.5',y:'8.25',width:9,height:'1.5',rx:'.75',fill:'white'}),
-                h('rect',{x:'4.5',y:'10.5',width:9,height:'1.5',rx:'.75',fill:'white'})
-              )
-            ),
-            h('div',null,
-              user&&h('div',{style:{fontSize:12,color:'rgba(255,255,255,0.65)',fontWeight:500,marginBottom:2}},user.farmName||user.name),
-              h('div',{style:{fontSize:26,fontWeight:700,color:'#fff',letterSpacing:'-0.5px'}},'PastureScan')
-            )
-          ),
-          h('button',{onClick:()=>setShowSeason(!showSeason),style:btn({background:'rgba(255,255,255,0.15)',borderRadius:20,padding:'7px 14px',color:'#fff',fontSize:13,fontWeight:600})},season.label+' ▾')
-        ),
-        showSeason&&h('div',{style:{marginTop:12,background:'rgba(255,255,255,0.12)',borderRadius:12,overflow:'hidden'}},
-          SEASONS.map(s=>h('button',{key:s.label,onClick:()=>{setSeasonAndRef(s);setShowSeason(false);},style:btn({display:'block',width:'100%',padding:'11px 16px',background:season.label===s.label?'rgba(255,255,255,0.2)':'transparent',borderBottom:'1px solid rgba(255,255,255,0.1)',fontSize:14,fontWeight:600,color:'#fff',textAlign:'left'})},s.label))
-        )
-      ),
-      h('div',{style:{display:'flex',background:C.card,borderBottom:'1px solid '+C.border}},
-        [{val:history.length,lbl:'Readings'},{val:avg?avg.toLocaleString():'—',lbl:'Avg kg DM/ha'}].map((s,i)=>
-          h('div',{key:i,style:{flex:1,padding:'14px 0',textAlign:'center',borderRight:i===0?'1px solid '+C.border:'none'}},
-            h('div',{style:{fontSize:22,fontWeight:700,color:C.text}},s.val),
-            h('div',{style:{fontSize:11,color:C.textSec,marginTop:2,fontWeight:500}},s.lbl)
-          )
-        )
-      ),
-      h('div',{style:{padding:20}},
-        h('button',{onClick:openCamera,style:btn({width:'100%',background:C.green,borderRadius:16,padding:18,color:'#fff',fontSize:17,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',gap:10,boxShadow:'0 4px 20px rgba(26,92,58,0.3)'})},
-          h('span',{style:{fontSize:22}},'🎥'),' Measure Pasture'
-        ),
-        h('div',{style:{marginTop:10,padding:'12px 14px',background:C.card,borderRadius:12,border:'1px solid '+C.border}},
-          h('div',{style:{fontSize:12,fontWeight:700,color:C.text,marginBottom:4}},'📐 How to measure'),
-          h('div',{style:{fontSize:12,color:C.textSec,lineHeight:1.5}},'Hold phone at waist height. Record a ',h('strong',null,'5-second video'),' while sweeping through a 180° arc across the paddock.'),
-          h('div',{style:{fontSize:11,color:C.textTert,marginTop:6}},'Tip: a single photo also works if preferred.')
-        )
-      ),
-      history.length>0&&h('div',{style:{margin:'0 20px 48px'}},
-        h('div',{style:{fontSize:12,fontWeight:700,color:C.textSec,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10}},`Saved Readings (${history.length})`),
-        history.map(hh=>{
-          const cat=getDMCat(hh.result.kgDMperHa);
-          return h('div',{key:hh.id,onClick:()=>{setViewingReading(hh);setEditNameVal(hh.paddock);setEditingName(false);setScreen('reading-detail');},style:{background:C.card,borderRadius:14,padding:'13px 16px',marginBottom:10,display:'flex',gap:12,alignItems:'center',boxShadow:'0 1px 3px rgba(0,0,0,0.07)',cursor:'pointer'}},
-            h('div',{style:{width:52,height:52,borderRadius:10,background:cat.color+'22',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22}},cat.emoji),
-            h('div',{style:{flex:1,minWidth:0}},
-              h('div',{style:{fontSize:15,fontWeight:700,color:C.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},hh.paddock),
-              h('div',{style:{fontSize:12,color:C.textSec,marginTop:2}},hh.date+' · '+hh.season),
-              h('div',{style:{fontSize:11,color:cat.color,fontWeight:600,marginTop:2}},cat.label)
-            ),
-            h('div',{style:{textAlign:'right',flexShrink:0}},
-              h('div',{style:{fontSize:22,fontWeight:800,color:cat.color}},hh.result.kgDMperHa.toLocaleString()),
-              h('div',{style:{fontSize:10,color:C.textSec}},'kg DM/ha')
-            )
-          );
-        })
-      )
-    );
+  // ─── CAMERA SCREEN ────────────────────────────────────────────────────────
+  if(screen==='camera'){
+    return h(CameraScreen,{
+      paddockName,setPaddockName,season,seasonRef,
+      onCapture:(frames,preview)=>{setCapturedImg(preview);runAnalysis(frames,preview);},
+      onBack:()=>go('home','back'),
+      onFallback:openFilePicker,
+    });
   }
 
-  // ── ANALYSING ─────────────────────────────────────────────────────────────
+  // ─── ANALYZING ────────────────────────────────────────────────────────────
   if(screen==='analyzing'){
-    const steps=['Extracting frames from sweep','Measuring canopy at each angle','Aggregating paddock readings','Applying DairyNZ formula'];
-    return h('div',{style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:24,padding:'0 32px'}},
-      fileInput,
-      capturedImage&&h('img',{src:capturedImage,style:{width:200,height:200,borderRadius:20,objectFit:'cover',boxShadow:'0 8px 32px rgba(0,0,0,0.12)'}}),
+    const steps=['Loading frames','Detecting grass & colour','Measuring canopy height','Applying DairyNZ formula'];
+    return h('div',{style:{background:'#0f172a',minHeight:'100vh',maxWidth:430,margin:'0 auto',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:28,padding:'0 36px'}},
+      capturedImg&&h('div',{style:{position:'relative'}},
+        h('img',{src:capturedImg,style:{width:220,height:220,borderRadius:24,objectFit:'cover',boxShadow:'0 20px 60px rgba(0,0,0,0.5)'}}),
+        h('div',{className:'scan-line',style:{borderRadius:2}})
+      ),
       h('div',{style:{textAlign:'center'}},
-        h('div',{style:{fontSize:22,fontWeight:700,color:C.text}},'Analysing Sweep'),
-        h('div',{style:{fontSize:14,color:C.textSec,marginTop:5}},'Sampling 8 frames · Applying DairyNZ standards')
+        h('div',{style:{fontSize:24,fontWeight:800,color:'#fff',letterSpacing:'-.5px'}},'Analysing'),
+        h('div',{style:{fontSize:14,color:'rgba(255,255,255,.5)',marginTop:6}},'DairyNZ calibrated · Up to 8 frames')
       ),
-      h('div',{style:{width:'100%',height:4,background:'#e5e7eb',borderRadius:2,overflow:'hidden'}},
-        h('div',{style:{width:progress+'%',height:'100%',background:C.green,borderRadius:2,transition:'width 0.4s ease'}})
+      h('div',{style:{width:'100%',height:5,background:'rgba(255,255,255,.1)',borderRadius:3,overflow:'hidden'}},
+        h('div',{style:{width:progress+'%',height:'100%',background:`linear-gradient(90deg,${C.green},#4ade80)`,borderRadius:3,transition:'width .4s ease'}})
       ),
-      h('div',{style:{alignSelf:'stretch',display:'flex',flexDirection:'column',gap:10}},
-        steps.map((s,i)=>h('div',{key:i,style:{display:'flex',alignItems:'center',gap:12}},
-          h('div',{style:{width:20,height:20,borderRadius:10,background:i<=step?C.green:'#e5e7eb',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,transition:'background 0.3s'}},
-            i<=step&&h('span',{style:{color:'#fff',fontSize:11,fontWeight:700}},'✓')
-          ),
-          h('span',{style:{fontSize:14,color:i<=step?C.text:C.textTert,fontWeight:i<=step?600:400}},s)
+      h('div',{style:{alignSelf:'stretch',display:'flex',flexDirection:'column',gap:12}},
+        steps.map((s,i)=>h('div',{key:i,style:{display:'flex',alignItems:'center',gap:14}},
+          h('div',{style:{width:24,height:24,borderRadius:12,background:i<=step?C.green:'rgba(255,255,255,.1)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,transition:'background .3s',fontSize:11,fontWeight:700,color:'#fff'}},i<=step?'✓':''),
+          h('span',{style:{fontSize:15,color:i<=step?'#fff':'rgba(255,255,255,.35)',fontWeight:i<=step?600:400,transition:'color .3s'}},s)
         ))
       )
     );
   }
 
-  // ── NO GRASS ──────────────────────────────────────────────────────────────
+  // ─── NO GRASS ─────────────────────────────────────────────────────────────
   if(screen==='no-grass'){
-    return h('div',{style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto'}},
-      fileInput,
-      h('div',{style:{position:'relative',height:220,overflow:'hidden',background:'#222'}},
-        capturedImage&&h('img',{src:capturedImage,style:{width:'100%',height:'100%',objectFit:'cover',opacity:0.7}}),
-        h('div',{style:{position:'absolute',inset:0,background:'linear-gradient(to bottom,rgba(0,0,0,0.3),rgba(0,0,0,0.6)'}}),
-        h('button',{onClick:()=>{setCapturedImage(null);setNoGrass(null);setScreen('home');},style:btn({position:'absolute',top:52,left:16,width:40,height:40,background:'rgba(0,0,0,0.45)',backdropFilter:'blur(6px)',borderRadius:20,color:'#fff',fontSize:17})},'←'),
-        h('div',{style:{position:'absolute',bottom:16,left:16}},
-          h('div',{style:{fontSize:11,color:'rgba(255,255,255,0.8)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}},'Detection result'),
-          h('div',{style:{fontSize:28,fontWeight:800,color:'#fff'}},'No Grass Detected')
+    return h('div',{className:`screen-${dir}`,style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto'}},
+      h('div',{style:{position:'relative',height:240,overflow:'hidden',background:'#1e293b'}},
+        capturedImg&&h('img',{src:capturedImg,style:{width:'100%',height:'100%',objectFit:'cover',opacity:.5}}),
+        h('div',{style:{position:'absolute',inset:0,background:'linear-gradient(to bottom,rgba(0,0,0,0.2),rgba(0,0,0,0.7)'}}),
+        h('button',{onClick:()=>go('home','back'),style:{position:'absolute',top:56,left:16,width:42,height:42,background:'rgba(0,0,0,.5)',backdropFilter:'blur(8px)',borderRadius:21,color:'#fff',fontSize:18,display:'flex',alignItems:'center',justifyContent:'center'}},'←'),
+        h('div',{style:{position:'absolute',bottom:20,left:20}},
+          h('div',{style:{fontSize:13,color:'rgba(255,255,255,.6)',fontWeight:600,textTransform:'uppercase',letterSpacing:1,marginBottom:4}},'Result'),
+          h('div',{style:{fontSize:30,fontWeight:800,color:'#fff'}},'No Grass Detected')
         )
       ),
-      h('div',{style:{background:C.card,borderRadius:'20px 20px 0 0',marginTop:-8,padding:20}},
-        h('div',{style:{background:C.redLight,border:'1.5px solid rgba(239,68,68,0.2)',borderRadius:14,padding:16,marginBottom:20,display:'flex',gap:14,alignItems:'flex-start'}},
-          h('div',{style:{fontSize:28,flexShrink:0}},'🚫'),
-          h('div',null,
-            h('div',{style:{fontSize:15,fontWeight:700,color:'#991b1b',marginBottom:4}},'No pasture found in this photo'),
-            h('div',{style:{fontSize:13,color:'#b91c1c',lineHeight:1.5}},noGrass&&noGrass.error?noGrass.error:'Please photograph grass from 1 metre above the canopy.')
-          )
+      h('div',{style:{background:C.card,borderRadius:'24px 24px 0 0',marginTop:-12,padding:24}},
+        h('div',{style:{background:'#fef2f2',border:`1.5px solid rgba(239,68,68,.15)`,borderRadius:16,padding:18,marginBottom:20,display:'flex',gap:16,alignItems:'flex-start'}},
+          h('div',{style:{fontSize:32,flexShrink:0}},'🚫'),
+          h('div',null,h('div',{style:{fontSize:16,fontWeight:700,color:'#991b1b',marginBottom:5}},'No pasture detected'),h('div',{style:{fontSize:14,color:'#b91c1c',lineHeight:1.55}},noGrass?.error||'Please photograph grass from 1 m above the canopy.'))
         ),
-        h('div',{style:{background:'#f9fafb',borderRadius:14,padding:16,marginBottom:20}},
-          h('div',{style:{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}},'Tips for a good reading'),
-          [['🎥','Video sweep','Record 5 seconds while rotating 180° at waist height'],['📍','Position','Hold phone at waist height, lens pointing down at the grass'],['🌿','Framing','Grass should fill the frame — no sky or concrete'],['☀️','Lighting','Works best in natural daylight']].map(([icon,title,desc],i)=>
-            h('div',{key:i,style:{display:'flex',gap:12,marginBottom:i<3?12:0}},
-              h('div',{style:{fontSize:18,flexShrink:0}},icon),
-              h('div',null,h('div',{style:{fontSize:13,fontWeight:600,color:C.text}},title),h('div',{style:{fontSize:12,color:C.textSec,marginTop:2}},desc))
+        h('div',{style:{background:'#f8fafc',borderRadius:16,padding:18,marginBottom:20}},
+          h('div',{style:{fontSize:14,fontWeight:700,color:C.text,marginBottom:14}},'Tips for a great reading'),
+          [['🎥','Sweep 180°','Hold button and sweep slowly across the paddock'],['📏','Waist height','Hold phone at hip height, lens pointing down'],['🌿','Fill the frame','Grass only — no sky, paths or concrete'],['☀️','Good light','Natural daylight works best']].map(([ic,t,d],i)=>
+            h('div',{key:i,style:{display:'flex',gap:14,marginBottom:i<3?14:0}},
+              h('div',{style:{width:36,height:36,borderRadius:10,background:C.greenLt,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}},ic),
+              h('div',null,h('div',{style:{fontSize:14,fontWeight:600,color:C.text}},t),h('div',{style:{fontSize:13,color:C.textSec,marginTop:2,lineHeight:1.4}},d))
             )
           )
         ),
-        h('button',{onClick:()=>{setCapturedImage(null);setNoGrass(null);openCamera();},style:btn({width:'100%',background:C.green,borderRadius:14,padding:17,color:'#fff',fontSize:16,fontWeight:700,marginBottom:10})},'📸 Try Again'),
-        h('button',{onClick:()=>{setCapturedImage(null);setNoGrass(null);setScreen('home');},style:btn({width:'100%',background:'transparent',border:'1.5px solid '+C.border,borderRadius:14,padding:15,color:C.textSec,fontSize:15,fontWeight:600})},'Go Home')
+        h('button',{onClick:()=>{setNoGrass(null);setCapturedImg(null);go('camera');},style:{width:'100%',background:C.green,borderRadius:16,padding:17,color:'#fff',fontSize:16,fontWeight:700,marginBottom:10}},'📸 Try Again'),
+        h('button',{onClick:()=>go('home','back'),style:{width:'100%',background:'transparent',border:`1.5px solid ${C.border}`,borderRadius:16,padding:15,color:C.textSec,fontSize:15,fontWeight:600}},'Go Home')
       )
     );
   }
 
-  // ── RESULT ────────────────────────────────────────────────────────────────
+  // ─── RESULT ───────────────────────────────────────────────────────────────
   if(screen==='result'&&result){
-    const cat=getDMCat(result.kgDMperHa),cowDays=Math.round(result.kgDMperHa/17);
-    return h('div',{style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto'}},
-      fileInput,
-      h('div',{style:{position:'relative',height:220,overflow:'hidden',background:C.green}},
-        capturedImage&&h('img',{src:capturedImage,style:{width:'100%',height:'100%',objectFit:'cover'}}),
-        h('div',{style:{position:'absolute',inset:0,background:'linear-gradient(to bottom,rgba(0,0,0,0.3),rgba(0,0,0,0) 40%,rgba(0,0,0,0.6)'}}),
-        h('button',{onClick:()=>setScreen('home'),style:btn({position:'absolute',top:52,left:16,width:40,height:40,background:'rgba(0,0,0,0.45)',backdropFilter:'blur(6px)',borderRadius:20,color:'#fff',fontSize:17})},'←'),
-        h('div',{style:{position:'absolute',bottom:16,left:16,right:16,display:'flex',alignItems:'flex-end',justifyContent:'space-between'}},
+    return h(ResultScreen,{result,capturedImg,paddockName,setPaddockName,season,activeTab,setActiveTab,onSave:saveReading,onRetake:()=>{setCapturedImg(null);setResult(null);go('camera');},onBack:()=>go('home','back'),dir});
+  }
+
+  // ─── READING DETAIL ───────────────────────────────────────────────────────
+  if(screen==='reading-detail'&&viewing){
+    const hh=viewing,cat=getCat(hh.result.kgDMperHa),r=hh.result;
+    const cowDays=Math.round(r.kgDMperHa/17);
+    const saveName=()=>{if(!editName.trim())return;const up={...hh,paddock:editName.trim()};setHistory(p=>p.map(x=>x.id===hh.id?up:x));setViewing(up);setEditingName(false);};
+    return h('div',{className:`screen-${dir}`,style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto',paddingBottom:40}},
+      h('div',{style:{position:'relative',height:240,overflow:'hidden',background:cat.color+'33'}},
+        h('div',{style:{position:'absolute',inset:0,background:`linear-gradient(135deg,${cat.color}44,${cat.color}11)`}}),
+        h('button',{onClick:()=>{setViewing(null);go('home','back');},style:{position:'absolute',top:56,left:16,width:42,height:42,background:'rgba(0,0,0,.35)',backdropFilter:'blur(8px)',borderRadius:21,color:'#fff',fontSize:18,display:'flex',alignItems:'center',justifyContent:'center'}},'←'),
+        h('div',{style:{position:'absolute',bottom:20,left:20,right:20,display:'flex',alignItems:'flex-end',justifyContent:'space-between'}},
           h('div',null,
-            h('div',{style:{fontSize:11,color:'rgba(255,255,255,0.8)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:2}},'Cover detected'),
-            h('div',{style:{fontSize:42,fontWeight:800,color:'#fff',letterSpacing:'-1.5px',lineHeight:1}},result.kgDMperHa.toLocaleString()),
-            h('div',{style:{fontSize:14,color:'rgba(255,255,255,0.85)',fontWeight:500}},'kg DM / ha')
+            h('div',{style:{fontSize:13,color:'rgba(0,0,0,.45)',fontWeight:600,textTransform:'uppercase',letterSpacing:1,marginBottom:4}}),
+            h('div',{style:{fontSize:52,fontWeight:900,color:cat.color,letterSpacing:'-2px',lineHeight:1}},r.kgDMperHa.toLocaleString()),
+            h('div',{style:{fontSize:15,color:cat.color,fontWeight:600,opacity:.7}},'kg DM / ha'),
+            h('div',{style:{fontSize:12,color:'rgba(0,0,0,.45)',marginTop:4}},hh.date+' · '+hh.season)
           ),
-          h('div',{style:{background:cat.color,borderRadius:10,padding:'7px 13px'}},
-            h('div',{style:{fontSize:12,color:'#fff',fontWeight:700}},cat.emoji+' '+cat.label)
-          )
+          h('div',{style:{background:cat.color,borderRadius:12,padding:'8px 14px',boxShadow:'0 4px 12px '+cat.color+'44'}},h('div',{style:{fontSize:13,color:'#fff',fontWeight:700}},cat.emoji+' '+cat.label))
         )
       ),
-      h('div',{style:{background:C.card,borderRadius:'20px 20px 0 0',marginTop:-8}},
-        h('div',{style:{padding:'18px 20px 0',display:'flex',alignItems:'center',justifyContent:'space-between'}},
-          h('input',{value:paddockName,onChange:e=>setPaddockName(e.target.value),placeholder:'Tap to name this reading',style:{fontSize:20,fontWeight:700,color:C.text,border:'none',outline:'none',background:'transparent',flex:1}}),
-          h('div',{style:{display:'flex',gap:6,flexShrink:0}},
-            result.isVideo&&h('div',{style:{background:'#e0e7ff',borderRadius:8,padding:'4px 10px'}},h('div',{style:{fontSize:11,color:'#4338ca',fontWeight:700}},'🎥 '+result.framesAnalysed+' FRAMES')),
-            h('div',{style:{background:C.greenLight,borderRadius:8,padding:'4px 10px'}},h('div',{style:{fontSize:11,color:C.green,fontWeight:700}},result.confidence.toUpperCase()))
-          )
+      h('div',{style:{background:C.card,borderRadius:'24px 24px 0 0',marginTop:-12,padding:20}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:10,marginBottom:20,paddingBottom:16,borderBottom:`1px solid ${C.border}`}},
+          editingName
+            ?h(Fragment,null,h('input',{autoFocus:true,value:editName,onChange:e=>setEditName(e.target.value),onKeyDown:e=>e.key==='Enter'&&saveName(),style:{flex:1,fontSize:20,fontWeight:700,color:C.text,borderBottom:`2px solid ${C.green}`,padding:'2px 0',background:'transparent'}}),h('button',{onClick:saveName,style:{background:C.green,borderRadius:10,padding:'8px 16px',color:'#fff',fontSize:13,fontWeight:700}},'Save'),h('button',{onClick:()=>setEditingName(false),style:{background:'#f1f5f9',borderRadius:10,padding:'8px 12px',color:C.textSec,fontSize:13}},'✕'))
+            :h(Fragment,null,h('div',{style:{flex:1,fontSize:20,fontWeight:700,color:C.text}},hh.paddock),h('button',{onClick:()=>{setEditName(hh.paddock);setEditingName(true);},style:{background:'#f1f5f9',borderRadius:10,padding:'8px 14px',color:C.textSec,fontSize:13,fontWeight:600}},'✏️ Rename'))
         ),
-        h('div',{style:{display:'flex',borderBottom:'1px solid '+C.border,marginTop:14,padding:'0 20px'}},
-          ['metrics','cover','actions'].map(t=>
-            h('button',{key:t,onClick:()=>setActiveTab(t),style:btn({flex:1,padding:'10px 0',background:'transparent',borderBottom:activeTab===t?'2px solid '+C.text:'2px solid transparent',color:activeTab===t?C.text:C.textTert,fontSize:14,fontWeight:activeTab===t?700:500,marginBottom:-1})},
-              t==='metrics'?'Metrics':t==='cover'?'Cover':'Actions'
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',marginBottom:16}},
+          [{lbl:'Cover',val:r.kgDMperHa.toLocaleString(),unit:'kg DM/ha'},{lbl:'Height',val:r.hCm+'',unit:'cm'},{lbl:'Growth',val:r.gr+'',unit:'kg/ha/d'},{lbl:'Leaf stage',val:r.leaf,unit:''},{lbl:'Quality',val:r.qual,unit:''},{lbl:'Cow-days',val:cowDays+'',unit:'@ 17 kg DM'}].map((m,i)=>
+            h('div',{key:i,style:{padding:'14px 0',borderBottom:i<3?`1px solid ${C.border}`:'none',borderRight:i%3<2?`1px solid ${C.border}`:'none',paddingLeft:i%3===0?0:14}},
+              h('div',{style:{fontSize:10,color:C.textTert,fontWeight:600,textTransform:'uppercase',letterSpacing:.8,marginBottom:4}},m.lbl),
+              h('div',{style:{fontSize:i===0?20:17,fontWeight:800,color:C.text}},m.val),
+              h('div',{style:{fontSize:10,color:C.textTert,marginTop:2}},m.unit)
             )
           )
         ),
-        activeTab==='metrics'&&h('div',{style:{padding:20}},
-          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr'}},
-            [{lbl:'Cover',val:result.kgDMperHa.toLocaleString(),unit:'kg DM/ha'},{lbl:'Height',val:result.heightCm+'',unit:'cm'},{lbl:'Growth rate',val:result.growthRate+'',unit:'kg DM/ha/d'},{lbl:'Leaf stage',val:result.leafStage,unit:''},{lbl:'Quality',val:result.quality,unit:''},{lbl:'Cow-days/ha',val:cowDays+'',unit:'@ 17 kg DM/cow'}].map((m,i)=>
-              h('div',{key:i,style:{padding:'16px 0',borderBottom:i<3?'1px solid '+C.border:'none',borderRight:i%3<2?'1px solid '+C.border:'none',paddingLeft:i%3===0?0:16}},
-                h('div',{style:{fontSize:11,color:C.textSec,marginBottom:4,fontWeight:500}},m.lbl),
-                h('div',{style:{fontSize:i===0?20:18,fontWeight:800,color:C.text}},m.val),
-                h('div',{style:{fontSize:10,color:C.textTert,marginTop:1}},m.unit)
-              )
-            )
+        h('div',{style:{display:'flex',gap:8,marginBottom:16}},
+          [{bg:r.clover?C.greenLt:'#f8fafc',lbl:'Clover',val:r.clover?'Present ✓':'Not detected',c:r.clover?C.green:C.textSec},{bg:'#f8fafc',lbl:'Status',val:r.pg?'Post-grazing':'Pre-grazing',c:C.text},{bg:C.greenLt,lbl:'Confidence',val:(r.conf||'').toUpperCase(),c:C.green}].map((p,i)=>
+            h('div',{key:i,style:{flex:1,background:p.bg,borderRadius:12,padding:'10px 12px'}},h('div',{style:{fontSize:10,color:p.c,fontWeight:700,opacity:.65,marginBottom:3,textTransform:'uppercase',letterSpacing:.6}},p.lbl),h('div',{style:{fontSize:13,fontWeight:700,color:p.c}},p.val))
+          )
+        ),
+        h('div',{style:{background:'#f8fafc',borderRadius:16,padding:16,marginBottom:12}},h('div',{style:{fontSize:12,fontWeight:700,color:C.textSec,marginBottom:8,textTransform:'uppercase',letterSpacing:.8}},'Assessment'),h('div',{style:{fontSize:14,color:C.text,lineHeight:1.6}},r.notes)),
+        h('div',{style:{background:C.greenLt,borderRadius:16,padding:16,marginBottom:20}},h('div',{style:{fontSize:11,color:C.green,fontWeight:700,textTransform:'uppercase',letterSpacing:.8,marginBottom:8}},'DairyNZ Recommendation'),h('div',{style:{fontSize:14,color:C.greenDk,fontWeight:600,lineHeight:1.55}},r.rec)),
+        h('button',{onClick:()=>{setHistory(p=>p.filter(x=>x.id!==hh.id));setViewing(null);go('home','back');},style:{width:'100%',background:'transparent',border:'1.5px solid #fecaca',borderRadius:14,padding:14,color:C.red,fontSize:14,fontWeight:600}},'Delete Reading')
+      )
+    );
+  }
+
+  // ─── HOME ─────────────────────────────────────────────────────────────────
+  const avg=history.length?Math.round(history.reduce((s,hh)=>s+hh.result.kgDMperHa,0)/history.length):null;
+  return h('div',{style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto',paddingBottom:32}},
+    h('input',{ref:fileRef2,type:'file',accept:'video/*,image/*',capture:'environment',style:{display:'none'},onChange:handleFile}),
+    // Header
+    h('div',{style:{background:`linear-gradient(160deg,${C.greenDk},${C.green})`,padding:'56px 20px 24px',position:'relative',overflow:'hidden'}},
+      h('div',{style:{position:'absolute',top:-40,right:-40,width:160,height:160,borderRadius:80,background:'rgba(255,255,255,.04)'}}),
+      h('div',{style:{position:'absolute',bottom:-20,left:-20,width:100,height:100,borderRadius:50,background:'rgba(255,255,255,.04)'}}),
+      h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:10}},
+          h('button',{onClick:()=>setAuthScr('account'),style:{background:'rgba(255,255,255,.15)',borderRadius:22,width:40,height:40,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',backdropFilter:'blur(4px)'}},
+            h('svg',{width:18,height:18,viewBox:'0 0 18 18',fill:'none'},h('circle',{cx:9,cy:9,r:8,stroke:'white',strokeWidth:'1.5',fill:'none'}),h('rect',{x:'4.5',y:6,width:9,height:'1.5',rx:'.75',fill:'white'}),h('rect',{x:'4.5',y:'8.25',width:9,height:'1.5',rx:'.75',fill:'white'}),h('rect',{x:'4.5',y:'10.5',width:9,height:'1.5',rx:'.75',fill:'white'}))
           ),
-          h('div',{style:{marginTop:14,display:'flex',gap:10}},
-            h('div',{style:{flex:1,background:C.greenLight,borderRadius:12,padding:'12px 14px'}},h('div',{style:{fontSize:11,color:C.green,fontWeight:600,marginBottom:3}},'Clover'),h('div',{style:{fontSize:15,fontWeight:700,color:C.green}},result.cloverPresent?'Present ✓':'Not detected')),
-            h('div',{style:{flex:1,background:'#f5f5f5',borderRadius:12,padding:'12px 14px'}},h('div',{style:{fontSize:11,color:C.textSec,fontWeight:600,marginBottom:3}},'Status'),h('div',{style:{fontSize:15,fontWeight:700,color:C.text}},result.postGrazing?'Post-grazing':'Pre-grazing'))
-          )
+          h('div',null,user&&h('div',{style:{fontSize:12,color:'rgba(255,255,255,.6)',fontWeight:500,marginBottom:2}},user.farm||user.name),h('div',{style:{fontSize:28,fontWeight:800,color:'#fff',letterSpacing:'-.5px'}},'PastureScan'))
         ),
-        activeTab==='cover'&&h('div',{style:{padding:20}},
-          h('div',{style:{fontSize:12,color:C.textSec,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:14}},'DairyNZ Grazing Target Ranges'),
-          DM_RANGES.map((r,i)=>{
-            const isActive=result.kgDMperHa>=r.min&&result.kgDMperHa<r.max;
-            const barPct=isActive?Math.min(100,Math.max(5,(result.kgDMperHa-r.min)/(r.max-r.min)*100)):0;
-            return h('div',{key:i,style:{marginBottom:14,background:isActive?'#f9fafb':'transparent',borderRadius:12,padding:isActive?12:'0 4px'}},
-              h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:5}},
-                h('div',{style:{display:'flex',alignItems:'center',gap:7}},
-                  h('div',{style:{width:8,height:8,borderRadius:3,background:r.color}}),
-                  h('span',{style:{fontSize:13,fontWeight:isActive?700:500,color:isActive?C.text:C.textSec}},r.label),
-                  isActive&&h('span',{style:{fontSize:10,background:C.greenLight,color:C.green,borderRadius:5,padding:'2px 7px',fontWeight:700}},'you are here')
+        h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+          h('button',{onClick:()=>setSunlight(!sunlight),style:{background:'rgba(255,255,255,.15)',borderRadius:20,width:36,height:36,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,backdropFilter:'blur(4px)'},title:'Sunlight mode'},sunlight?'🌙':'☀️'),
+          h('button',{onClick:()=>setShowSeason(!showSeason),style:{background:'rgba(255,255,255,.15)',borderRadius:20,padding:'7px 14px',color:'#fff',fontSize:13,fontWeight:600,backdropFilter:'blur(4px)'}},season.label+' ▾')
+        )
+      ),
+      showSeason&&h('div',{style:{background:'rgba(0,0,0,.25)',backdropFilter:'blur(8px)',borderRadius:14,overflow:'hidden',marginBottom:4}},
+        SEASONS.map(s=>h('button',{key:s.label,onClick:()=>{setSeason(s);seasonRef.current=s;setShowSeason(false);},style:{display:'block',width:'100%',padding:'12px 16px',background:season.label===s.label?'rgba(255,255,255,.2)':'transparent',borderBottom:'1px solid rgba(255,255,255,.08)',fontSize:14,fontWeight:600,color:'#fff',textAlign:'left'}},s.label+(season.label===s.label?' ✓':'')))
+      ),
+      h('div',{style:{display:'flex',gap:12}},
+        [{val:history.length,lbl:'Total Readings'},{val:avg?avg.toLocaleString():'—',lbl:'Avg kg DM/ha'}].map((s,i)=>
+          h('div',{key:i,style:{flex:1,background:'rgba(255,255,255,.12)',borderRadius:14,padding:'12px 16px',backdropFilter:'blur(4px)'}},
+            h('div',{style:{fontSize:26,fontWeight:800,color:'#fff'}},s.val),
+            h('div',{style:{fontSize:11,color:'rgba(255,255,255,.65)',fontWeight:600,marginTop:2,textTransform:'uppercase',letterSpacing:.8}},s.lbl)
+          )
+        )
+      )
+    ),
+    // Measure button
+    h('div',{style:{padding:'20px 20px 8px'}},
+      h('button',{onClick:()=>go('camera'),style:{width:'100%',background:C.green,borderRadius:20,padding:'20px',color:'#fff',fontSize:18,fontWeight:800,display:'flex',alignItems:'center',justifyContent:'center',gap:12,boxShadow:`0 8px 32px ${C.green}55`,letterSpacing:'-.3px'}},
+        h('span',{style:{fontSize:26}},'📷'),' Measure Pasture'
+      ),
+      h('div',{style:{marginTop:10,background:C.card,borderRadius:14,padding:'12px 16px',border:`1px solid ${C.border}`,display:'flex',alignItems:'flex-start',gap:12}},
+        h('div',{style:{fontSize:20,marginTop:1}},'💡'),
+        h('div',{style:{fontSize:13,color:C.textSec,lineHeight:1.5}},h('strong',{style:{color:C.text}},'Tap'),' for a quick photo — ',h('strong',{style:{color:C.text}},'hold'),' for a 180° video sweep. Sweeps give better accuracy.')
+      )
+    ),
+    // History
+    history.length===0
+      ?h('div',{style:{textAlign:'center',padding:'48px 32px'}},
+          h('div',{style:{fontSize:72,marginBottom:16}},'🌾'),
+          h('div',{style:{fontSize:20,fontWeight:800,color:C.text,marginBottom:8}},'No readings yet'),
+          h('div',{style:{fontSize:15,color:C.textSec,lineHeight:1.6}},'Take your first pasture measurement to start tracking cover across your farm.'),
+          h('button',{onClick:()=>go('camera'),style:{marginTop:24,background:C.greenLt,borderRadius:14,padding:'12px 24px',color:C.green,fontSize:15,fontWeight:700,border:`1.5px solid ${C.greenMid}`}},'Take First Reading →')
+        )
+      :h('div',{style:{padding:'8px 20px 0'}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:C.textSec,textTransform:'uppercase',letterSpacing:1,marginBottom:12,marginTop:4}},`Recent Readings (${history.length})`),
+          history.map(hh=>{
+            const cat=getCat(hh.result.kgDMperHa);
+            return h(SwipeCard,{key:hh.id,onDelete:()=>setHistory(p=>p.filter(x=>x.id!==hh.id)),onClick:()=>{setViewing(hh);go('reading-detail');}},
+              h('div',{style:{background:C.card,padding:'14px 16px',display:'flex',gap:14,alignItems:'center'}},
+                h('div',{style:{width:54,height:54,borderRadius:14,background:`linear-gradient(135deg,${cat.color}22,${cat.color}11)`,border:`1.5px solid ${cat.color}33`,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}},cat.emoji),
+                h('div',{style:{flex:1,minWidth:0}},
+                  h('div',{style:{fontSize:15,fontWeight:700,color:C.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},hh.paddock),
+                  h('div',{style:{fontSize:12,color:C.textSec,marginTop:3}},hh.date+' · '+hh.season),
+                  h('div',{style:{fontSize:11,color:cat.color,fontWeight:600,marginTop:3}},cat.label+' · '+hh.result.leaf+' leaf')
                 ),
-                h('span',{style:{fontSize:12,color:C.textSec}},r.min.toLocaleString()+'–'+(r.max===5000?'5,000+':r.max.toLocaleString()))
-              ),
-              h('div',{style:{height:5,background:'#f0f0f0',borderRadius:3,overflow:'hidden'}},
-                h('div',{style:{width:barPct+'%',height:'100%',background:r.color,borderRadius:3,transition:'width 0.6s ease'}})
-              ),
-              isActive&&h('div',{style:{fontSize:11,color:C.textSec,marginTop:5}},r.target)
+                h('div',{style:{textAlign:'right',flexShrink:0}},
+                  h('div',{style:{fontSize:24,fontWeight:900,color:cat.color,letterSpacing:'-1px'}},hh.result.kgDMperHa.toLocaleString()),
+                  h('div',{style:{fontSize:10,color:C.textSec,fontWeight:600,textTransform:'uppercase',letterSpacing:.5,marginTop:2}},'kg DM/ha')
+                )
+              )
             );
           }),
-          h('div',{style:{background:'#f9fafb',borderRadius:12,padding:'14px 16px',marginTop:4}},
-            h('div',{style:{fontSize:12,fontWeight:700,color:C.text,marginBottom:6}},'Assessment'),
-            h('div',{style:{fontSize:13,color:C.textSec,lineHeight:1.55}},result.notes)
-          )
-        ),
-        activeTab==='actions'&&h('div',{style:{padding:'20px 20px 0'}},
-          h('div',{style:{background:C.greenLight,borderRadius:14,padding:16,marginBottom:14}},
-            h('div',{style:{fontSize:11,color:C.green,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}},'DairyNZ Recommendation'),
-            h('div',{style:{fontSize:15,color:C.green,fontWeight:600,lineHeight:1.5}},result.recommendation)
-          ),
-          h('div',{style:{background:'#f9fafb',borderRadius:14,padding:16}},
-            h('div',{style:{fontSize:13,fontWeight:700,color:C.text,marginBottom:10}},'Calculation details'),
-            [['Season',season.label],['Residual target','1,500–1,600 kg DM/ha'],['Pre-grazing target','2,800–3,200 kg DM/ha']].map(([k,v],i)=>
-              h('div',{key:i,style:{display:'flex',justifyContent:'space-between',marginBottom:i<2?8:0}},
-                h('span',{style:{fontSize:13,color:C.textSec}},k),
-                h('span',{style:{fontSize:13,fontWeight:600,color:C.text}},v)
-              )
-            )
-          )
-        ),
-        h('div',{style:{padding:'16px 20px 36px',marginTop:4}},
-          h('button',{onClick:saveReading,style:btn({width:'100%',background:C.green,borderRadius:14,padding:17,color:'#fff',fontSize:16,fontWeight:700,boxShadow:'0 4px 16px rgba(26,92,58,0.22)',marginBottom:10,display:'flex',alignItems:'center',justifyContent:'center',gap:8})},'💾 Save Reading'),
-          h('button',{onClick:()=>{setCapturedImage(null);setResult(null);openCamera();},style:btn({width:'100%',background:'transparent',border:'1.5px solid '+C.border,borderRadius:14,padding:15,color:C.textSec,fontSize:15,fontWeight:600})},'📸 Take Another')
+          h('div',{style:{textAlign:'center',padding:'16px 0',fontSize:12,color:C.textTert}},'← Swipe left to delete')
         )
-      )
-    );
-  }
-
-  // ── READING DETAIL ────────────────────────────────────────────────────────
-  if(screen==='reading-detail'&&viewingReading){
-    const hh=viewingReading,cat=getDMCat(hh.result.kgDMperHa),r=hh.result,cowDays=Math.round(r.kgDMperHa/17);
-    const saveName=()=>{const t=editNameVal.trim();if(!t)return;const up={...hh,paddock:t};setHistory(prev=>prev.map(item=>item.id===hh.id?up:item));setViewingReading(up);setEditingName(false);};
-    return h('div',{style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto'}},
-      fileInput,
-      h('div',{style:{position:'relative',height:220,overflow:'hidden',background:C.green}},
-        h('div',{style:{position:'absolute',inset:0,background:'linear-gradient(to bottom,rgba(0,0,0,0.35),rgba(0,0,0,0) 45%,rgba(0,0,0,0.6)'}}),
-        h('button',{onClick:()=>{setViewingReading(null);setScreen('home');},style:btn({position:'absolute',top:52,left:16,width:40,height:40,background:'rgba(0,0,0,0.45)',backdropFilter:'blur(6px)',borderRadius:20,color:'#fff',fontSize:17})},'←'),
-        h('div',{style:{position:'absolute',bottom:16,left:16,right:16,display:'flex',alignItems:'flex-end',justifyContent:'space-between'}},
-          h('div',null,
-            h('div',{style:{fontSize:11,color:'rgba(255,255,255,0.75)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:2}},hh.date+' · '+hh.season),
-            h('div',{style:{fontSize:38,fontWeight:800,color:'#fff',letterSpacing:'-1px',lineHeight:1}},r.kgDMperHa.toLocaleString()),
-            h('div',{style:{fontSize:13,color:'rgba(255,255,255,0.85)',fontWeight:500}},'kg DM / ha')
-          ),
-          h('div',{style:{background:cat.color,borderRadius:10,padding:'7px 13px'}},h('div',{style:{fontSize:12,color:'#fff',fontWeight:700}},cat.emoji+' '+cat.label))
-        )
-      ),
-      h('div',{style:{background:C.card,borderRadius:'20px 20px 0 0',marginTop:-8}},
-        h('div',{style:{padding:'18px 20px 16px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid '+C.border}},
-          editingName
-            ?h(Fragment,null,
-                h('input',{autoFocus:true,value:editNameVal,onChange:e=>setEditNameVal(e.target.value),onKeyDown:e=>e.key==='Enter'&&saveName(),style:{flex:1,fontSize:19,fontWeight:700,color:C.text,border:'none',borderBottom:'2px solid '+C.green,outline:'none',background:'transparent',padding:'2px 0'}}),
-                h('button',{onClick:saveName,style:btn({background:C.green,borderRadius:10,padding:'8px 16px',color:'#fff',fontSize:13,fontWeight:700})},'Save'),
-                h('button',{onClick:()=>setEditingName(false),style:btn({background:'#f0f0f0',borderRadius:10,padding:'8px 12px',color:C.textSec,fontSize:13})},'Cancel')
-              )
-            :h(Fragment,null,
-                h('div',{style:{flex:1,fontSize:19,fontWeight:700,color:C.text}},hh.paddock),
-                h('button',{onClick:()=>{setEditNameVal(hh.paddock);setEditingName(true);},style:btn({background:'#f0f0f0',borderRadius:10,padding:'8px 14px',color:C.textSec,fontSize:13,fontWeight:600})},'✏️ Edit')
-              )
-        ),
-        h('div',{style:{padding:'16px 20px 0'}},
-          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr'}},
-            [{lbl:'Cover',val:r.kgDMperHa.toLocaleString(),unit:'kg DM/ha'},{lbl:'Height',val:r.heightCm+'',unit:'cm'},{lbl:'Growth rate',val:r.growthRate+'',unit:'kg DM/ha/d'},{lbl:'Leaf stage',val:r.leafStage,unit:''},{lbl:'Quality',val:r.quality,unit:''},{lbl:'Cow-days/ha',val:cowDays+'',unit:'@ 17 kg DM'}].map((m,i)=>
-              h('div',{key:i,style:{padding:'14px 0',borderBottom:i<3?'1px solid '+C.border:'none',borderRight:i%3<2?'1px solid '+C.border:'none',paddingLeft:i%3===0?0:14}},
-                h('div',{style:{fontSize:11,color:C.textSec,marginBottom:3}},m.lbl),
-                h('div',{style:{fontSize:i===0?18:16,fontWeight:800,color:C.text}},m.val),
-                h('div',{style:{fontSize:10,color:C.textTert}},m.unit)
-              )
-            )
-          )
-        ),
-        h('div',{style:{padding:'14px 20px',display:'flex',gap:8}},
-          [{bg:r.cloverPresent?C.greenLight:'#f5f5f5',lbl:'Clover',val:r.cloverPresent?'Present ✓':'Not detected',c:r.cloverPresent?C.green:C.text},{bg:'#f5f5f5',lbl:'Status',val:r.postGrazing?'Post-grazing':'Pre-grazing',c:C.text},{bg:C.greenLight,lbl:'Confidence',val:(r.confidence||'').toUpperCase(),c:C.green}].map((p,i)=>
-            h('div',{key:i,style:{flex:1,background:p.bg,borderRadius:10,padding:'8px 10px'}},
-              h('div',{style:{fontSize:10,color:p.c,fontWeight:600,opacity:0.7}},p.lbl),
-              h('div',{style:{fontSize:12,fontWeight:700,color:p.c,marginTop:2}},p.val)
-            )
-          )
-        ),
-        h('div',{style:{margin:'0 20px 12px',background:'#f9fafb',borderRadius:14,padding:'14px 16px'}},
-          h('div',{style:{fontSize:12,fontWeight:700,color:C.text,marginBottom:6}},'Assessment'),
-          h('div',{style:{fontSize:13,color:C.textSec,lineHeight:1.55}},r.notes)
-        ),
-        h('div',{style:{margin:'0 20px',background:C.greenLight,borderRadius:14,padding:'14px 16px',marginBottom:14}},
-          h('div',{style:{fontSize:11,color:C.green,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6}},'DairyNZ Recommendation'),
-          h('div',{style:{fontSize:13,color:C.green,fontWeight:600,lineHeight:1.5}},r.recommendation)
-        ),
-        h('div',{style:{padding:'4px 20px 40px'}},
-          h('button',{onClick:()=>{setHistory(prev=>prev.filter(item=>item.id!==hh.id));setViewingReading(null);setScreen('home');},style:btn({width:'100%',background:'transparent',border:'1.5px solid #fee2e2',borderRadius:14,padding:14,color:'#dc2626',fontSize:14,fontWeight:600})},'Delete Reading')
-        )
-      )
-    );
-  }
-
-  return h('div',null,fileInput);
+  );
 }
 
-createRoot(document.getElementById('root')).render(h(PastureScan));
+// ─── Camera Screen ────────────────────────────────────────────────────────────
+function CameraScreen({paddockName,setPaddockName,season,seasonRef,onCapture,onBack,onFallback}){
+  const videoRef=useRef(null);
+  const streamRef=useRef(null);
+  const[ready,setReady]=useState(false);
+  const[error,setError]=useState(null);
+  const[isRecording,setIsRecording]=useState(false);
+  const[recTime,setRecTime]=useState(0);
+  const holdTimer=useRef(null);
+  const framesRef=useRef([]);
+  const frameInterval=useRef(null);
+  const MAX_REC=10000;
+  const CIRCUMFERENCE=2*Math.PI*36;
+
+  useEffect(()=>{
+    let active=true;
+    navigator.mediaDevices?.getUserMedia({video:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080}},audio:false})
+      .then(stream=>{if(!active)return;streamRef.current=stream;if(videoRef.current){videoRef.current.srcObject=stream;videoRef.current.play().then(()=>setReady(true)).catch(()=>setReady(true));}})
+      .catch(err=>{if(!active)return;setError(err.name==='NotAllowedError'?'Camera permission denied. Please allow camera access in Settings.':'Camera not available on this device.');});
+    return()=>{active=false;streamRef.current?.getTracks().forEach(t=>t.stop());};
+  },[]);
+
+  // Recording timer
+  useEffect(()=>{
+    if(!isRecording){setRecTime(0);return;}
+    const t=setInterval(()=>setRecTime(p=>{if(p>=MAX_REC){finishCapture();return 0;}return p+80;}),80);
+    return()=>clearInterval(t);
+  },[isRecording]);
+
+  const captureFrame=()=>{
+    const v=videoRef.current;if(!v||v.videoWidth===0)return null;
+    const c=document.createElement('canvas'),sc=480/v.videoWidth;
+    c.width=480;c.height=Math.round(v.videoHeight*sc);
+    c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+    return c.toDataURL('image/jpeg',.88);
+  };
+
+  const finishCapture=()=>{
+    clearInterval(frameInterval.current);
+    const frames=[...framesRef.current];
+    framesRef.current=[];
+    setIsRecording(false);
+    if(!frames.length){const f=captureFrame();if(f)onCapture([f],f);}
+    else onCapture(frames,frames[Math.floor(frames.length/2)]);
+  };
+
+  const onPressStart=e=>{
+    e.preventDefault();
+    framesRef.current=[];
+    holdTimer.current=setTimeout(()=>{
+      // Start video mode
+      setIsRecording(true);
+      framesRef.current=[];
+      frameInterval.current=setInterval(()=>{const f=captureFrame();if(f)framesRef.current.push(f);},220);
+    },200);
+  };
+
+  const onPressEnd=e=>{
+    e.preventDefault();
+    if(holdTimer.current){clearTimeout(holdTimer.current);holdTimer.current=null;}
+    if(isRecording){finishCapture();}
+    else{
+      // Quick tap — take single photo
+      const f=captureFrame();if(f)onCapture([f],f);
+    }
+  };
+
+  const progress=recTime/MAX_REC;
+  const dashOffset=CIRCUMFERENCE*(1-progress);
+
+  if(error)return h('div',{style:{background:'#000',minHeight:'100vh',maxWidth:430,margin:'0 auto',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:32,gap:20}},
+    h('div',{style:{fontSize:48}},'📷'),
+    h('div',{style:{fontSize:16,color:'#fff',textAlign:'center',lineHeight:1.6}},error),
+    h('button',{onClick:onFallback,style:{background:C.green,borderRadius:14,padding:'14px 28px',color:'#fff',fontSize:15,fontWeight:700,marginTop:8}},'Upload from Photos'),
+    h('button',{onClick:onBack,style:{background:'transparent',borderRadius:14,padding:'14px 28px',color:'rgba(255,255,255,.5)',fontSize:15,fontWeight:600}},'← Back')
+  );
+
+  return h('div',{style:{background:'#000',minHeight:'100vh',maxWidth:430,margin:'0 auto',position:'relative',overflow:'hidden'}},
+    h('video',{ref:videoRef,muted:true,playsInline:true,autoPlay:true,style:{width:'100%',height:'100%',objectFit:'cover',position:'absolute',inset:0}}),
+    // Gradient overlays
+    h('div',{style:{position:'absolute',top:0,left:0,right:0,height:140,background:'linear-gradient(to bottom,rgba(0,0,0,.6),transparent)',pointerEvents:'none'}}),
+    h('div',{style:{position:'absolute',bottom:0,left:0,right:0,height:200,background:'linear-gradient(to top,rgba(0,0,0,.75),transparent)',pointerEvents:'none'}}),
+    // Top bar
+    h('div',{style:{position:'absolute',top:0,left:0,right:0,padding:'56px 20px 0',display:'flex',alignItems:'center',gap:12}},
+      h('button',{onClick:onBack,style:{width:42,height:42,background:'rgba(0,0,0,.45)',backdropFilter:'blur(8px)',borderRadius:21,color:'#fff',fontSize:18,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},'←'),
+      h('input',{value:paddockName,onChange:e=>setPaddockName(e.target.value),placeholder:'Paddock name (optional)',style:{flex:1,background:'rgba(0,0,0,.4)',backdropFilter:'blur(8px)',borderRadius:20,padding:'10px 16px',color:'#fff',fontSize:15,fontWeight:500,'::placeholder':{color:'rgba(255,255,255,.5)'}}}),
+    ),
+    // Corner guides
+    !isRecording&&ready&&h('div',{style:{position:'absolute',inset:'25%',pointerEvents:'none'}},
+      ...[{top:0,left:0,borderTop:'2px solid rgba(255,255,255,.6)',borderLeft:'2px solid rgba(255,255,255,.6)'},{top:0,right:0,borderTop:'2px solid rgba(255,255,255,.6)',borderRight:'2px solid rgba(255,255,255,.6)'},{bottom:0,left:0,borderBottom:'2px solid rgba(255,255,255,.6)',borderLeft:'2px solid rgba(255,255,255,.6)'},{bottom:0,right:0,borderBottom:'2px solid rgba(255,255,255,.6)',borderRight:'2px solid rgba(255,255,255,.6)'}].map((s,i)=>
+        h('div',{key:i,style:{position:'absolute',width:24,height:24,...s}})
+      )
+    ),
+    // Recording indicator
+    isRecording&&h('div',{style:{position:'absolute',top:110,left:0,right:0,display:'flex',alignItems:'center',justifyContent:'center',gap:8}},
+      h('div',{style:{width:10,height:10,borderRadius:5,background:'#ef4444',boxShadow:'0 0 8px #ef4444'}}),
+      h('div',{style:{color:'#fff',fontSize:14,fontWeight:700,letterSpacing:.5}},'RECORDING · SWEEP SLOWLY')
+    ),
+    // Bottom controls
+    h('div',{style:{position:'absolute',bottom:0,left:0,right:0,padding:'0 0 48px',display:'flex',flexDirection:'column',alignItems:'center',gap:16}},
+      h('div',{className:'capture-hint'},isRecording?'Release to analyse':'Tap for photo · Hold for video sweep'),
+      h('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',gap:40,width:'100%'}},
+        // Fallback button
+        h('button',{onClick:onFallback,style:{width:48,height:48,background:'rgba(255,255,255,.15)',backdropFilter:'blur(8px)',borderRadius:24,color:'#fff',fontSize:20,display:'flex',alignItems:'center',justifyContent:'center'}},'🖼'),
+        // Capture button
+        h('div',{className:'capture-wrap',
+          onPointerDown:onPressStart,onPointerUp:onPressEnd,onPointerLeave:e=>{if(isRecording||holdTimer.current)onPressEnd(e);},
+          style:{touchAction:'none',userSelect:'none'}},
+          h('svg',{className:'capture-svg',width:88,height:88,viewBox:'0 0 88 88'},
+            h('circle',{cx:44,cy:44,r:36,fill:'none',stroke:'rgba(255,255,255,.25)',strokeWidth:6}),
+            isRecording&&h('circle',{cx:44,cy:44,r:36,fill:'none',stroke:'#ef4444',strokeWidth:6,strokeDasharray:CIRCUMFERENCE,strokeDashoffset:dashOffset,strokeLinecap:'round',style:{transition:'stroke-dashoffset .08s linear'}})
+          ),
+          !isRecording&&h('div',{className:'pulse-ring'}),
+          h('div',{className:'capture-circle'+(isRecording?' rec':'')})
+        ),
+        h('div',{style:{width:48,height:48}}) // spacer
+      )
+    ),
+    // Loading overlay
+    !ready&&!error&&h('div',{style:{position:'absolute',inset:0,background:'rgba(0,0,0,.8)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12}},
+      h('div',{style:{width:40,height:40,border:'3px solid rgba(255,255,255,.2)',borderTopColor:'#fff',borderRadius:20,animation:'spin .8s linear infinite'}}),
+      h('div',{style:{color:'rgba(255,255,255,.6)',fontSize:14}},'Starting camera…')
+    )
+  );
+}
+
+// ─── Result Screen ────────────────────────────────────────────────────────────
+function ResultScreen({result,capturedImg,paddockName,setPaddockName,season,activeTab,setActiveTab,onSave,onRetake,onBack,dir}){
+  const cat=getCat(result.kgDMperHa);
+  const cowDays=Math.round(result.kgDMperHa/17);
+  const displayNum=useCountUp(result.kgDMperHa);
+  const barW=Math.min(100,Math.max(5,(result.kgDMperHa-cat.min)/(cat.max-cat.min)*100));
+
+  return h('div',{className:`screen-${dir}`,style:{background:C.bg,minHeight:'100vh',maxWidth:430,margin:'0 auto'}},
+    // Hero
+    h('div',{style:{position:'relative',height:260,overflow:'hidden',background:`linear-gradient(160deg,${cat.color}cc,${cat.color}88)`}},
+      capturedImg&&h('img',{src:capturedImg,style:{width:'100%',height:'100%',objectFit:'cover',position:'absolute',inset:0,opacity:.35,mixBlendMode:'luminosity'}}),
+      h('div',{style:{position:'absolute',inset:0,background:`linear-gradient(to bottom,rgba(0,0,0,.15),rgba(0,0,0,.0) 40%,rgba(0,0,0,.3))`}}),
+      h('button',{onClick:onBack,style:{position:'absolute',top:56,left:16,width:42,height:42,background:'rgba(0,0,0,.35)',backdropFilter:'blur(8px)',borderRadius:21,color:'#fff',fontSize:18,display:'flex',alignItems:'center',justifyContent:'center'}},'←'),
+      h('div',{style:{position:'absolute',bottom:20,left:20,right:20}},
+        h('div',{style:{fontSize:11,color:'rgba(255,255,255,.75)',fontWeight:600,textTransform:'uppercase',letterSpacing:1,marginBottom:4}},'Pasture Cover'),
+        h('div',{className:'pop-in',style:{display:'flex',alignItems:'baseline',gap:8}},
+          h('div',{style:{fontSize:56,fontWeight:900,color:'#fff',letterSpacing:'-2px',lineHeight:1}},displayNum.toLocaleString()),
+          h('div',{style:{fontSize:16,color:'rgba(255,255,255,.8)',fontWeight:600}},'kg DM/ha')
+        ),
+        h('div',{style:{display:'flex',alignItems:'center',gap:10,marginTop:8}},
+          h('div',{style:{background:'rgba(255,255,255,.2)',backdropFilter:'blur(4px)',borderRadius:20,padding:'4px 12px'}},h('div',{style:{fontSize:13,color:'#fff',fontWeight:700}},cat.emoji+' '+cat.label)),
+          result.isVideo&&h('div',{style:{background:'rgba(255,255,255,.15)',backdropFilter:'blur(4px)',borderRadius:20,padding:'4px 12px'}},h('div',{style:{fontSize:12,color:'rgba(255,255,255,.9)',fontWeight:600}},'🎥 '+result.framesAnalysed+' frames')),
+          h('div',{style:{background:'rgba(255,255,255,.15)',backdropFilter:'blur(4px)',borderRadius:20,padding:'4px 12px'}},h('div',{style:{fontSize:12,color:'rgba(255,255,255,.9)',fontWeight:600}},result.conf.toUpperCase()))
+        )
+      )
+    ),
+    // Card
+    h('div',{style:{background:C.card,borderRadius:'24px 24px 0 0',marginTop:-12,paddingBottom:40}},
+      // Paddock name
+      h('div',{style:{padding:'18px 20px 0',display:'flex',alignItems:'center',gap:10}},
+        h('input',{value:paddockName,onChange:e=>setPaddockName(e.target.value),placeholder:'Name this reading…',style:{flex:1,fontSize:20,fontWeight:700,color:C.text,background:'transparent',letterSpacing:'-.3px'}}),
+      ),
+      // Tabs
+      h('div',{style:{display:'flex',padding:'0 20px',marginTop:12,gap:4,borderBottom:`1.5px solid ${C.border}`}},
+        ['metrics','cover','actions'].map(t=>h('button',{key:t,onClick:()=>setActiveTab(t),style:{flex:1,padding:'10px 0',background:'transparent',borderBottom:activeTab===t?`2.5px solid ${C.text}`:'2.5px solid transparent',color:activeTab===t?C.text:C.textTert,fontSize:14,fontWeight:activeTab===t?700:500,marginBottom:-1.5,textTransform:'capitalize'}},t))
+      ),
+      // Metrics tab
+      activeTab==='metrics'&&h('div',{style:{padding:20}},
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',marginBottom:16}},
+          [{lbl:'Cover',val:result.kgDMperHa.toLocaleString(),unit:'kg DM/ha'},{lbl:'Height',val:result.hCm+'',unit:'cm'},{lbl:'Growth',val:result.gr+'',unit:'kg/ha/d'},{lbl:'Leaf stage',val:result.leaf,unit:''},{lbl:'Quality',val:result.qual,unit:''},{lbl:'Cow-days',val:cowDays+'',unit:'@ 17 kg DM'}].map((m,i)=>
+            h('div',{key:i,style:{padding:'16px 0',borderBottom:i<3?`1px solid ${C.border}`:'none',borderRight:i%3<2?`1px solid ${C.border}`:'none',paddingLeft:i%3===0?0:14}},
+              h('div',{style:{fontSize:10,color:C.textTert,fontWeight:600,textTransform:'uppercase',letterSpacing:.8,marginBottom:5}},m.lbl),
+              h('div',{style:{fontSize:i===0?22:18,fontWeight:800,color:C.text}},m.val),
+              h('div',{style:{fontSize:10,color:C.textTert,marginTop:2}},m.unit)
+            )
+          )
+        ),
+        h('div',{style:{display:'flex',gap:8}},
+          [{bg:result.clover?C.greenLt:'#f8fafc',lbl:'Clover',val:result.clover?'Present ✓':'Not detected',c:result.clover?C.green:C.textSec},{bg:'#f8fafc',lbl:'Status',val:result.pg?'Post-grazing':'Pre-grazing',c:C.text}].map((p,i)=>
+            h('div',{key:i,style:{flex:1,background:p.bg,borderRadius:14,padding:'12px 14px'}},h('div',{style:{fontSize:10,color:p.c,fontWeight:700,opacity:.7,marginBottom:4,textTransform:'uppercase',letterSpacing:.6}},p.lbl),h('div',{style:{fontSize:14,fontWeight:700,color:p.c}},p.val))
+          )
+        )
+      ),
+      // Cover tab
+      activeTab==='cover'&&h('div',{style:{padding:20}},
+        h('div',{style:{fontSize:11,fontWeight:700,color:C.textSec,textTransform:'uppercase',letterSpacing:1,marginBottom:16}},'DairyNZ Target Ranges'),
+        DM.map((r,i)=>{
+          const isA=result.kgDMperHa>=r.min&&result.kgDMperHa<r.max;
+          const bPct=isA?Math.min(100,Math.max(3,(result.kgDMperHa-r.min)/(r.max-r.min)*100)):0;
+          return h('div',{key:i,style:{marginBottom:14,background:isA?'#f8fafc':'transparent',borderRadius:14,padding:isA?'12px':'0 4px',border:isA?`1.5px solid ${r.color}22`:'none'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+              h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+                h('div',{style:{width:9,height:9,borderRadius:3,background:r.color,flexShrink:0}}),
+                h('span',{style:{fontSize:13,fontWeight:isA?700:500,color:isA?C.text:C.textSec}},r.label),
+                isA&&h('span',{style:{fontSize:10,background:r.color,color:'#fff',borderRadius:20,padding:'2px 8px',fontWeight:700}},'YOU ARE HERE')
+              ),
+              h('span',{style:{fontSize:11,color:C.textSec,fontWeight:600}},r.min.toLocaleString()+'–'+(r.max===5500?'5,500+':r.max.toLocaleString()))
+            ),
+            h('div',{style:{height:6,background:'#f0f0f0',borderRadius:3,overflow:'hidden'}},
+              h('div',{className:'dm-bar',style:{width:bPct+'%',height:'100%',background:r.color,borderRadius:3,'--w':bPct+'%'}})
+            ),
+            isA&&h('div',{style:{fontSize:12,color:C.textSec,marginTop:8,lineHeight:1.4}},r.tip)
+          );
+        }),
+        h('div',{style:{background:'#f8fafc',borderRadius:16,padding:16,marginTop:4}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:C.textSec,textTransform:'uppercase',letterSpacing:1,marginBottom:8}},'Assessment'),
+          h('div',{style:{fontSize:14,color:C.text,lineHeight:1.65}},result.notes)
+        )
+      ),
+      // Actions tab
+      activeTab==='actions'&&h('div',{style:{padding:20}},
+        h('div',{style:{background:C.greenLt,border:`1.5px solid ${C.greenMid}`,borderRadius:18,padding:18,marginBottom:14}},
+          h('div',{style:{fontSize:11,color:C.green,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:8}},'DairyNZ Recommendation'),
+          h('div',{style:{fontSize:15,color:C.greenDk,fontWeight:600,lineHeight:1.6}},result.rec)
+        ),
+        h('div',{style:{background:'#f8fafc',borderRadius:18,padding:18,marginBottom:14}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:C.textSec,textTransform:'uppercase',letterSpacing:1,marginBottom:12}},'Calculation Details'),
+          [['Season',season.label],['Sward type',result.sw.charAt(0).toUpperCase()+result.sw.slice(1)],['Residual target','1,500–1,650 kg DM/ha'],['Pre-graze target','2,800–3,200 kg DM/ha']].map(([k,v],i,a)=>
+            h('div',{key:i,style:{display:'flex',justifyContent:'space-between',paddingBottom:i<a.length-1?10:0,marginBottom:i<a.length-1?10:0,borderBottom:i<a.length-1?`1px solid ${C.border}`:'none'}},
+              h('span',{style:{fontSize:14,color:C.textSec}},k),
+              h('span',{style:{fontSize:14,fontWeight:600,color:C.text}},v)
+            )
+          )
+        ),
+        result.isVideo&&h('div',{style:{background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:16,padding:16}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:'#4338ca',textTransform:'uppercase',letterSpacing:1,marginBottom:8}},'🎥 Sweep Analysis'),
+          h('div',{style:{display:'flex',gap:12}},
+            h('div',{style:{flex:1,background:'rgba(99,102,241,.08)',borderRadius:10,padding:10,textAlign:'center'}},h('div',{style:{fontSize:18,fontWeight:800,color:'#4338ca'}},result.framesAnalysed),h('div',{style:{fontSize:10,color:'#6366f1',fontWeight:600,marginTop:2}},'FRAMES')),
+            h('div',{style:{flex:1,background:'rgba(99,102,241,.08)',borderRadius:10,padding:10,textAlign:'center'}},h('div',{style:{fontSize:18,fontWeight:800,color:'#4338ca'}},'±'+result.hSt+' cm'),h('div',{style:{fontSize:10,color:'#6366f1',fontWeight:600,marginTop:2}},'HEIGHT VAR.'))
+          ),
+          h('div',{style:{fontSize:12,color:'#6366f1',marginTop:10,lineHeight:1.5}},result.spatVar==='high'?'⚠️ High variation — consider multiple readings in problem areas.':result.spatVar==='moderate'?'Moderate variation — some areas differ.':'Low variation — paddock is uniform, reading is highly representative.')
+        )
+      ),
+      // Save buttons
+      h('div',{style:{padding:'16px 20px 0'}},
+        h('button',{onClick:onSave,style:{width:'100%',background:C.green,borderRadius:16,padding:18,color:'#fff',fontSize:17,fontWeight:800,boxShadow:`0 8px 24px ${C.green}44`,marginBottom:10,display:'flex',alignItems:'center',justifyContent:'center',gap:10,letterSpacing:'-.2px'}},h('span',null,'💾'),' Save Reading'),
+        h('button',{onClick:onRetake,style:{width:'100%',background:'transparent',border:`1.5px solid ${C.border}`,borderRadius:16,padding:15,color:C.textSec,fontSize:15,fontWeight:600}},'📷 Take Another')
+      )
+    )
+  );
+}
+
+// ─── Mount ────────────────────────────────────────────────────────────────────
+// Add spin keyframe for camera loader
+const style=document.createElement('style');
+style.textContent='@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
+document.head.appendChild(style);
+
+createRoot(document.getElementById('root')).render(h(App));
 </script>
 </body>
 </html>
