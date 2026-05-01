@@ -225,8 +225,10 @@ function computeResult(s,season){
   // Compression varies with height (tall pasture compresses more)
   const cRv=SW.cR*(h<8?.85:h<16?1.0:1.05);
   const compH=Math.max(.4,h/cRv);
-  // DairyNZ-derived base
-  let kg=(compH*SF.m+SF.b)*SW.yA;
+  // DairyNZ-derived base. Use Winter formula for very short residuals — seasonal offsets are calibrated for the plate-meter range (3-20 cm compressed) and over-estimate at ground level.
+  const useShort=h<6&&!isLawn;
+  const m=useShort?140:SF.m, b=useShort?500:SF.b;
+  let kg=(compH*m+b)*SW.yA;
   // Image-health correction (-40% to +40% range)
   const ih=Math.max(-.4,Math.min(.4,dP*1.10+rP*.65+mP*.30-yP*1.30-(brownPct/100)*.95+(clover?.06:0)-(1-greenPct/100)*.45));
   kg*=1+ih*.42;
