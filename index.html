@@ -104,6 +104,7 @@ const Ic={
   importIcon:(s=18,col='currentColor')=>h('svg',{width:s,height:s,viewBox:'0 0 24 24',fill:'none',stroke:col,strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round'},h('path',{d:'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'}),h('polyline',{points:'17 8 12 3 7 8'}),h('line',{x1:12,y1:3,x2:12,y2:15})),
   chevron:(s=16,col='currentColor')=>h('svg',{width:s,height:s,viewBox:'0 0 24 24',fill:'none',stroke:col,strokeWidth:2.5,strokeLinecap:'round',strokeLinejoin:'round'},h('polyline',{points:'9 18 15 12 9 6'})),
   menu:(s=20,col='currentColor')=>h('svg',{width:s,height:s,viewBox:'0 0 24 24',fill:'none',stroke:col,strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round'},h('line',{x1:3,y1:12,x2:21,y2:12}),h('line',{x1:3,y1:6,x2:21,y2:6}),h('line',{x1:3,y1:18,x2:21,y2:18})),
+  target:(s=20,col='currentColor')=>h('svg',{width:s,height:s,viewBox:'0 0 24 24',fill:'none',stroke:col,strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round'},h('circle',{cx:12,cy:12,r:10}),h('circle',{cx:12,cy:12,r:6}),h('circle',{cx:12,cy:12,r:2})),
 };
 
 // ─── DM Gauge ────────────────────────────────────────────────────────────────
@@ -342,10 +343,13 @@ function App(){
   const[shareCode,setShareCode]=useState(null);
   const[importCode,setImportCode]=useState('');
   const[importRes,setImportRes]=useState(null);
+  const[calibMode,setCalibMode]=useState(false);
+  const[calibReadings,setCalibReadings]=useState(()=>{try{return JSON.parse(localStorage.getItem('ps_calib')||'[]');}catch{return[];}});
   const[navTab,setNavTab]=useState('home');
   const seasonRef=useRef(season);
 
   useEffect(()=>{try{localStorage.setItem('ps_h',JSON.stringify(history.map(r=>({...r,image:null}))));}catch{};},[history]);
+  useEffect(()=>{try{localStorage.setItem('ps_calib',JSON.stringify(calibReadings));}catch{};},[calibReadings]);
   useEffect(()=>{if(user)localStorage.setItem('ps_u',JSON.stringify(user));else localStorage.removeItem('ps_u');},[user]);
   useEffect(()=>{document.body.classList.toggle('sun',sunlight);},[sunlight]);
 
@@ -416,12 +420,19 @@ function App(){
     else{const r=computeResult(combined,cur);if(frames.length>1){r.framesAnalysed=combined.frames;r.spatVar=combined.spatVar;r.hSt=combined.hSt;r.isVideo=true;}setResult(r);setActiveTab('metrics');go('result');}
   },[]);
 
-  const saveReading=useCallback((paddock,grazeType)=>{
+  const saveReading=useCallback((paddock,grazeType,rpmActual)=>{
     if(!result)return;
     let thumb=null;
     if(capturedImg){try{const ci=new Image();ci.src=capturedImg;const cv=document.createElement('canvas');cv.width=320;cv.height=240;cv.getContext('2d').drawImage(ci,0,0,320,240);thumb=cv.toDataURL('image/jpeg',0.4);}catch(e){}}
     const r={id:Date.now(),paddock:(paddock||'').trim()||`Reading ${history.length+1}`,grazeType:grazeType||'post',date:new Date().toLocaleDateString('en-NZ'),time:new Date().toLocaleTimeString('en-NZ',{hour:'2-digit',minute:'2-digit'}),image:thumb,result,season:season.label};
     setHistory(p=>[r,...p.slice(0,49)]);
+    if(rpmActual){
+      const rpm=parseInt(rpmActual,10);
+      if(rpm>0){
+        const err=rpm-result.kgDMperHa;
+        setCalibReadings(p=>[{id:r.id,date:r.date,paddock:r.paddock,season:r.season,aiEst:result.kgDMperHa,rpm,err,errPct:Math.round(Math.abs(err)/rpm*100)},...p.slice(0,99)]);
+      }
+    }
     setPaddockName('');setResult(null);setCapturedImg(null);go('home','back');
   },[result,season,history]);
 
@@ -502,6 +513,45 @@ function App(){
             h('div',{style:{display:'flex',alignItems:'center',gap:10,fontWeight:700,color:C.text,marginBottom:12}},Ic.download(16,C.text),'Export Report'),
             h('button',{onClick:exportReport,disabled:!history.length,style:{width:'100%',background:history.length?'#0F766E':'#CBD5E1',borderRadius:14,padding:14,color:'#fff',fontSize:14,fontWeight:700,fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:8}},Ic.download(16,'#fff'),`Download (${history.length} readings)`)
           ),
+          h('div',{style:{background:C.card,borderRadius:20,padding:'18px 20px',marginBottom:16,boxShadow:C.shadow}},
+            h('div',{style:{display:'flex',alignItems:'center',gap:10,fontWeight:700,color:C.text,marginBottom:4}},Ic.target(16,C.text),'Calibration'),
+            h('div',{style:{fontSize:13,color:C.textSec,marginBottom:12}},'Compare AI estimates against your plate meter to track accuracy.'),
+            calibReadings.length===0
+              ?h('div',{style:{background:'rgba(234,179,8,.08)',borderRadius:14,padding:14,border:'1px solid rgba(234,179,8,.25)',fontSize:13,color:'#92400E',lineHeight:1.6}},
+                  'No calibration readings yet. Tap the ',h('strong',null,'target icon'),' on the camera screen, take a reading, then enter your plate meter result when saving.')
+              :h(Fragment,null,
+                  h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}},
+                    (()=>{
+                      const n=calibReadings.length;
+                      const mae=Math.round(calibReadings.reduce((s,r)=>s+Math.abs(r.err),0)/n);
+                      const bias=Math.round(calibReadings.reduce((s,r)=>s+(r.aiEst-r.rpm),0)/n);
+                      const mape=Math.round(calibReadings.reduce((s,r)=>s+r.errPct,0)/n);
+                      return[
+                        {lbl:'Readings',val:n,unit:''},
+                        {lbl:'Avg Error',val:mae,unit:'kg/ha'},
+                        {lbl:'Bias',val:(bias>0?'+':'')+bias,unit:'kg/ha'},
+                      ].map((s,i)=>h('div',{key:i,style:{background:'#F8FAF8',borderRadius:12,padding:'10px 12px',textAlign:'center'}},
+                        h('div',{style:{fontSize:18,fontWeight:800,color:i===2&&bias!==0?(bias>0?'#DC2626':C.green):C.text}},s.val),
+                        h('div',{style:{fontSize:10,color:C.textSec,fontWeight:600,marginTop:2,textTransform:'uppercase',letterSpacing:.6}},s.lbl),
+                        s.unit&&h('div',{style:{fontSize:10,color:C.textTert}},s.unit)
+                      ));
+                    })()
+                  ),
+                  h('div',{style:{fontSize:12,color:C.textSec,marginBottom:12,lineHeight:1.55}},
+                    (()=>{const bias=Math.round(calibReadings.reduce((s,r)=>s+(r.aiEst-r.rpm),0)/calibReadings.length);
+                    return bias>150?'App is over-estimating. Consider grazing slightly earlier than app suggests.':bias<-150?'App is under-estimating. Pasture may be ready sooner than app suggests.':'App is well-calibrated for your farm.';})()
+                  ),
+                  calibReadings.slice(0,5).map((r,i)=>h('div',{key:i,style:{display:'flex',justifyContent:'space-between',alignItems:'center',paddingBottom:i<Math.min(calibReadings.length,5)-1?10:0,marginBottom:i<Math.min(calibReadings.length,5)-1?10:0,borderBottom:i<Math.min(calibReadings.length,5)-1?`1px solid ${C.border}`:'none'}},
+                    h('div',null,h('div',{style:{fontSize:13,fontWeight:700,color:C.text}},r.paddock),h('div',{style:{fontSize:11,color:C.textSec}},r.date+' · '+r.season)),
+                    h('div',{style:{textAlign:'right'}},
+                      h('div',{style:{fontSize:12,color:C.textSec}},'AI: '+r.aiEst.toLocaleString()),
+                      h('div',{style:{fontSize:12,fontWeight:700,color:C.green}},'RPM: '+r.rpm.toLocaleString()),
+                      h('div',{style:{fontSize:11,color:Math.abs(r.err)>300?C.red:C.textTert}},(r.err>0?'+':'')+r.err+' kg/ha')
+                    )
+                  )),
+                  calibReadings.length>0&&h('button',{onClick:()=>setCalibReadings([]),style:{width:'100%',background:'transparent',border:`1px solid ${C.border}`,borderRadius:10,padding:10,color:C.textSec,fontSize:12,fontWeight:600,fontFamily:'inherit',marginTop:12}},'Clear calibration data')
+                )
+          ),
           h('button',{onClick:logout,style:{width:'100%',background:'transparent',border:'1.5px solid #FECACA',borderRadius:14,padding:14,color:C.red,fontSize:15,fontWeight:600,fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:8}},Ic.logout(16,C.red),'Sign Out')
         ),
         isAcc&&!user&&h('div',{style:{textAlign:'center',padding:'60px 0'}},
@@ -538,6 +588,7 @@ function App(){
       onCapture:(frames,preview)=>{setCapturedImg(preview);runAnalysis(frames,preview);},
       onBack:()=>go('home','back'),
       onFileSelected:handleFile,
+      calibMode,onToggleCalib:()=>setCalibMode(p=>!p),
     });
   }
 
@@ -601,7 +652,7 @@ function App(){
 
   // ─── RESULT ──────────────────────────────────────────────────────────────
   if(screen==='result'&&result){
-    return h(ResultScreen,{result,capturedImg,paddockName,setPaddockName,season,activeTab,setActiveTab,onSave:saveReading,onRetake:()=>{setCapturedImg(null);setResult(null);go('camera');},onBack:()=>go('home','back'),dir});
+    return h(ResultScreen,{result,capturedImg,paddockName,setPaddockName,season,activeTab,setActiveTab,onSave:saveReading,onRetake:()=>{setCapturedImg(null);setResult(null);go('camera');},onBack:()=>go('home','back'),dir,calibMode});
   }
 
   // ─── READING DETAIL ───────────────────────────────────────────────────────
@@ -755,7 +806,7 @@ function App(){
 }
 
 // ─── Camera Screen ────────────────────────────────────────────────────────────
-function CameraScreen({paddockName,setPaddockName,season,seasonRef,onCapture,onBack,onFileSelected}){
+function CameraScreen({paddockName,setPaddockName,season,seasonRef,onCapture,onBack,onFileSelected,calibMode,onToggleCalib}){
   const videoRef=useRef(null);
   const streamRef=useRef(null);
   const fileInputRef=useRef(null);
@@ -835,9 +886,13 @@ function CameraScreen({paddockName,setPaddockName,season,seasonRef,onCapture,onB
     h('div',{style:{position:'absolute',top:0,left:0,right:0,height:150,background:'linear-gradient(to bottom,rgba(0,0,0,.65),transparent)',pointerEvents:'none'}}),
     h('div',{style:{position:'absolute',bottom:0,left:0,right:0,height:220,background:'linear-gradient(to top,rgba(0,0,0,.8),transparent)',pointerEvents:'none'}}),
     // Top bar
-    h('div',{style:{position:'absolute',top:0,left:0,right:0,padding:'52px 20px 0',display:'flex',alignItems:'center',gap:12}},
+    h('div',{style:{position:'absolute',top:0,left:0,right:0,padding:'52px 16px 0',display:'flex',alignItems:'center',gap:10}},
       h('button',{onClick:onBack,style:{width:42,height:42,background:'rgba(0,0,0,.4)',backdropFilter:'blur(10px)',borderRadius:21,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},Ic.back(18,'#fff')),
-      h('input',{value:paddockName,onChange:e=>setPaddockName(e.target.value),placeholder:'Paddock name (optional)',style:{flex:1,background:'rgba(0,0,0,.35)',backdropFilter:'blur(10px)',borderRadius:22,padding:'10px 18px',color:'#fff',fontSize:15,fontWeight:500,fontFamily:'inherit'}})
+      h('input',{value:paddockName,onChange:e=>setPaddockName(e.target.value),placeholder:'Paddock name (optional)',style:{flex:1,background:'rgba(0,0,0,.35)',backdropFilter:'blur(10px)',borderRadius:22,padding:'10px 16px',color:'#fff',fontSize:15,fontWeight:500,fontFamily:'inherit'}}),
+      h('button',{onClick:onToggleCalib,title:'Calibration mode',style:{width:42,height:42,background:calibMode?'rgba(234,179,8,.35)':'rgba(0,0,0,.4)',backdropFilter:'blur(10px)',borderRadius:21,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:calibMode?'1.5px solid rgba(234,179,8,.7)':'none'}},Ic.target(18,calibMode?'#FDE047':'#fff'))
+    ),
+    calibMode&&h('div',{style:{position:'absolute',top:110,left:'50%',transform:'translateX(-50%)',background:'rgba(234,179,8,.25)',backdropFilter:'blur(8px)',borderRadius:20,padding:'5px 16px',border:'1px solid rgba(234,179,8,.5)'}},
+      h('div',{style:{fontSize:11,color:'#FDE047',fontWeight:700,letterSpacing:.8}},'CALIBRATION MODE — Enter plate meter reading after capture')
     ),
     // Corner guides
     !isRecording&&ready&&h('div',{style:{position:'absolute',inset:'25%',pointerEvents:'none'}},
@@ -879,18 +934,23 @@ function CameraScreen({paddockName,setPaddockName,season,seasonRef,onCapture,onB
 }
 
 // ─── Save Modal ───────────────────────────────────────────────────────────────
-function SaveModal({onConfirm,onCancel}){
+function SaveModal({onConfirm,onCancel,calibMode}){
   const [paddock,setPaddock]=useState('');
   const [graze,setGraze]=useState('post');
+  const [rpm,setRpm]=useState('');
   return h('div',{style:{position:'fixed',inset:0,zIndex:200,display:'flex',flexDirection:'column',justifyContent:'flex-end',background:'rgba(0,0,0,.6)',backdropFilter:'blur(6px)'}},
     h('div',{style:{background:'#fff',borderRadius:'28px 28px 0 0',padding:'8px 24px 44px',animation:'slideUp .28s cubic-bezier(0.32,0.72,0,1)'}},
       h('div',{style:{width:40,height:4,background:'#E2EBE5',borderRadius:2,margin:'12px auto 24px'}}),
-      h('div',{style:{fontSize:20,fontWeight:800,color:C.text,marginBottom:24}},'Save Reading'),
+      h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:24}},
+        h('div',{style:{fontSize:20,fontWeight:800,color:C.text}},'Save Reading'),
+        calibMode&&h('div',{style:{background:'rgba(234,179,8,.15)',borderRadius:10,padding:'4px 10px',display:'flex',alignItems:'center',gap:5}},
+          Ic.target(13,'#D97706'),h('div',{style:{fontSize:11,fontWeight:700,color:'#D97706'}},'CALIBRATION'))
+      ),
       h('div',{style:{marginBottom:18}},
         h('label',{style:{fontSize:11,fontWeight:700,color:C.textSec,textTransform:'uppercase',letterSpacing:.8,display:'block',marginBottom:8}},'Paddock Number / Name'),
         h('input',{value:paddock,onChange:e=>setPaddock(e.target.value),placeholder:'e.g. Paddock 4, Home Block…',autoFocus:true,style:{width:'100%',fontSize:16,fontWeight:500,padding:'13px 16px',border:`1.5px solid ${C.border}`,borderRadius:14,boxSizing:'border-box',outline:'none',color:C.text,fontFamily:'inherit'}})
       ),
-      h('div',{style:{marginBottom:28}},
+      h('div',{style:{marginBottom:calibMode?18:28}},
         h('label',{style:{fontSize:11,fontWeight:700,color:C.textSec,textTransform:'uppercase',letterSpacing:.8,display:'block',marginBottom:8}},'Grazing Status'),
         h('div',{style:{display:'flex',gap:10}},
           ['pre','post'].map(g=>
@@ -900,14 +960,19 @@ function SaveModal({onConfirm,onCancel}){
           )
         )
       ),
-      h('button',{onClick:()=>onConfirm(paddock,graze),style:{width:'100%',background:C.green,borderRadius:16,padding:17,color:'#fff',fontSize:17,fontWeight:800,marginBottom:10,fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:10,boxShadow:`0 6px 20px ${C.green}44`}},Ic.check(20,'#fff'),'Save Reading'),
+      calibMode&&h('div',{style:{marginBottom:24,background:'rgba(234,179,8,.08)',borderRadius:16,padding:'14px 16px',border:'1.5px solid rgba(234,179,8,.3)'}},
+        h('label',{style:{fontSize:11,fontWeight:700,color:'#D97706',textTransform:'uppercase',letterSpacing:.8,display:'block',marginBottom:8}},'Plate Meter Reading (kg DM/ha)'),
+        h('input',{value:rpm,onChange:e=>setRpm(e.target.value),type:'number',placeholder:'e.g. 2450',inputMode:'numeric',style:{width:'100%',fontSize:18,fontWeight:700,padding:'12px 14px',border:`1.5px solid rgba(234,179,8,.4)`,borderRadius:12,boxSizing:'border-box',outline:'none',color:C.text,fontFamily:'inherit',background:'#fff'}}),
+        h('div',{style:{fontSize:11,color:'#92400E',marginTop:6}},'Take 5 readings across the paddock and enter the average.')
+      ),
+      h('button',{onClick:()=>onConfirm(paddock,graze,rpm||null),style:{width:'100%',background:C.green,borderRadius:16,padding:17,color:'#fff',fontSize:17,fontWeight:800,marginBottom:10,fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:10,boxShadow:`0 6px 20px ${C.green}44`}},Ic.check(20,'#fff'),'Save Reading'),
       h('button',{onClick:onCancel,style:{width:'100%',background:'transparent',borderRadius:16,padding:14,color:C.textSec,fontSize:15,fontWeight:600,fontFamily:'inherit'}},'Cancel')
     )
   );
 }
 
 // ─── Result Screen ────────────────────────────────────────────────────────────
-function ResultScreen({result,capturedImg,paddockName,setPaddockName,season,activeTab,setActiveTab,onSave,onRetake,onBack,dir}){
+function ResultScreen({result,capturedImg,paddockName,setPaddockName,season,activeTab,setActiveTab,onSave,onRetake,onBack,dir,calibMode}){
   const [showSaveModal,setShowSaveModal]=useState(false);
   const cat=getCat(result.kgDMperHa);
   const cowDays=Math.round(result.kgDMperHa/17);
@@ -938,7 +1003,7 @@ function ResultScreen({result,capturedImg,paddockName,setPaddockName,season,acti
       h('button',{onClick:()=>setShowSaveModal(true),style:{width:'100%',background:C.green,borderRadius:16,padding:18,color:'#fff',fontSize:17,fontWeight:800,boxShadow:`0 8px 28px ${C.green}66`,marginBottom:12,display:'flex',alignItems:'center',justifyContent:'center',gap:10,letterSpacing:'-.2px',fontFamily:'inherit'}},Ic.check(20,'#fff'),'Save Reading'),
       h('button',{onClick:onRetake,style:{width:'100%',background:'rgba(255,255,255,.15)',backdropFilter:'blur(10px)',border:'1.5px solid rgba(255,255,255,.3)',borderRadius:16,padding:15,color:'#fff',fontSize:15,fontWeight:600,fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:8}},Ic.camera(18,'#fff'),'Take Another')
     ),
-    showSaveModal&&h(SaveModal,{onConfirm:(paddock,graze)=>{setShowSaveModal(false);onSave(paddock,graze);},onCancel:()=>setShowSaveModal(false)})
+    showSaveModal&&h(SaveModal,{calibMode,onConfirm:(paddock,graze,rpm)=>{setShowSaveModal(false);onSave(paddock,graze,rpm);},onCancel:()=>setShowSaveModal(false)})
   );
 }
 
